@@ -2,11 +2,6 @@
 
 > 一个面板同时搞定**翻墙协议**(VLESS-Reality / Trojan / VMess / Hysteria2 / TUIC / AnyTLS)、**转发中转**、以及**每用户限速 / 流量 / 到期**。
 
-## 关注作者(三月)
-
-- 🌐 博客 / 导航站:**[3yuedaohang.com](https://3yuedaohang.com)**
-- ▶️ YouTube:**[@zhanzhang3yue](https://www.youtube.com/@zhanzhang3yue)**
-
 ---
 
 ## 特性
