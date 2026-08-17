@@ -54,13 +54,38 @@ export default function IndexPage() {
   const tacInstanceRef = useRef<any>(null);
   const captchaContainerRef = useRef<HTMLDivElement>(null);
   const [isWebView, setIsWebView] = useState(false);
+
+  const safeDestroyCaptcha = () => {
+    const captcha = tacInstanceRef.current;
+    tacInstanceRef.current = null;
+
+    if (!captcha) return;
+
+    try {
+      captcha.destroyWindow();
+    } catch (error) {
+      console.warn('销毁验证码失败:', error);
+    }
+  };
+
+  const safeReloadCaptcha = (captcha?: any) => {
+    const instance = captcha || tacInstanceRef.current;
+
+    if (!instance) return false;
+
+    try {
+      instance.reloadCaptcha();
+      return true;
+    } catch (error) {
+      console.warn('刷新验证码失败:', error);
+      return false;
+    }
+  };
+
   // 清理验证码实例
   useEffect(() => {
     return () => {
-      if (tacInstanceRef.current) {
-        tacInstanceRef.current.destroyWindow();
-        tacInstanceRef.current = null;
-      }
+      safeDestroyCaptcha();
     };
   }, []);
   // 检测是否在WebView中运行
@@ -98,15 +123,15 @@ export default function IndexPage() {
   // 初始化验证码
   const initCaptcha = async () => {
     if (!window.TAC || !captchaContainerRef.current) {
+      toast.error('验证码初始化失败，请刷新页面重试');
+      setShowCaptcha(false);
+      setLoading(false);
       return;
     }
 
     try {
       // 清理之前的验证码实例
-      if (tacInstanceRef.current) {
-        tacInstanceRef.current.destroyWindow();
-        tacInstanceRef.current = null;
-      }
+      safeDestroyCaptcha();
 
       // 使用axios的baseURL，确保在WebView中使用正确的面板地址
       const baseURL = axios.defaults.baseURL || (import.meta.env.VITE_API_BASE ? `${import.meta.env.VITE_API_BASE}/api/v1/` : '/api/v1/');
@@ -115,25 +140,40 @@ export default function IndexPage() {
         requestCaptchaDataUrl: `${baseURL}captcha/generate`,
         validCaptchaUrl: `${baseURL}captcha/verify`, 
         bindEl: "#captcha-container",
-        validSuccess: (res: any, _: any, tac: any) => {
-          
+        validSuccess: async (res: any) => {
+          const validToken = res?.data?.validToken;
 
-          form.captchaId = res.data.validToken
+          if (!validToken) {
+            toast.error('验证码结果无效，请重试');
+            setShowCaptcha(false);
+            safeDestroyCaptcha();
+            setLoading(false);
+            return;
+          }
 
           setShowCaptcha(false);
-          tac.destroyWindow();
-          performLogin();
+          safeDestroyCaptcha();
+          await performLogin(validToken);
         },
         validFail: (_: any, _captcha: any, tac: any) => {
-          tac.reloadCaptcha();
+          if (!safeReloadCaptcha(tac)) {
+            setShowCaptcha(false);
+            setLoading(false);
+            toast.error('验证码刷新失败，请重新点击登录');
+          }
         },
-        btnCloseFun: (_event: any, tac: any) => {
+        btnCloseFun: () => {
           setShowCaptcha(false);
-          tac.destroyWindow();
+          safeDestroyCaptcha();
           setLoading(false);
         },
         btnRefreshFun: (_event: any, tac: any) => {
-          tac.reloadCaptcha();
+          if (!safeReloadCaptcha(tac)) {
+            setShowCaptcha(false);
+            safeDestroyCaptcha();
+            setLoading(false);
+            toast.error('验证码刷新失败，请重新点击登录');
+          }
         }
       };
 
@@ -157,6 +197,7 @@ export default function IndexPage() {
 
     } catch (error) {
       console.error('初始化验证码失败:', error);
+      safeDestroyCaptcha();
       toast.error('验证码初始化失败，请刷新页面重试');
       setShowCaptcha(false);
       setLoading(false);
@@ -164,14 +205,14 @@ export default function IndexPage() {
   };
 
   // 执行登录请求
-  const performLogin = async () => {
+  const performLogin = async (captchaId?: string) => {
 
 
     try {
       const loginData: LoginData = {
         username: form.username.trim(),
         password: form.password,
-        captchaId: form.captchaId,
+        captchaId: captchaId || form.captchaId || "",
       };
 
       const response = await login(loginData);
@@ -254,7 +295,7 @@ export default function IndexPage() {
   return (
     <DefaultLayout>
       <section className="flex flex-col items-center justify-center gap-4 py-4 sm:py-8 md:py-10 pb-20 min-h-[calc(100dvh-120px)] sm:min-h-[calc(100dvh-200px)]">
-        <div className="w-full max-w-md px-4 sm:px-0">
+        <div className="w-full max-w-md px-4 sm:px-0 notranslate" translate="no">
           <Card className="w-full">
             <CardHeader className="pb-0 pt-6 px-6 flex-col items-center">
               <h1 className={title({ size: "sm" })}>登陆</h1>
@@ -322,11 +363,12 @@ export default function IndexPage() {
             {/* 背景遮罩层 - 模糊效果，暗黑模式下更深 */}
             <div className="absolute inset-0 bg-black/60 dark:bg-black/80 backdrop-blur-sm captcha-backdrop-enter" />
            {/* 验证码容器 */}
-           <div className="mb-4">
+           <div className="mb-4 notranslate" translate="no">
                 <div 
                   id="captcha-container" 
                   ref={captchaContainerRef}
-                  className="w-full flex justify-center"
+                  className="w-full flex justify-center notranslate"
+                  translate="no"
                   style={{
                     filter: document.documentElement.classList.contains('dark') || 
                            document.documentElement.getAttribute('data-theme') === 'dark' ||
