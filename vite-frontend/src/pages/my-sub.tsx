@@ -4,7 +4,7 @@ import { Button } from "@heroui/button";
 import { Input } from "@heroui/input";
 import { Chip } from "@heroui/chip";
 import toast from "react-hot-toast";
-import { getMyLines, getUserPackageInfo } from "@/api";
+import { getMyLines, getMyMasterSub, getUserPackageInfo } from "@/api";
 import { copyTextToClipboard } from "@/utils/clipboard";
 import { SubQrToggle } from "@/components/sub-qr";
 
@@ -16,15 +16,17 @@ import { SubQrToggle } from "@/components/sub-qr";
 export default function MySubPage() {
   const [lines, setLines] = useState<any[]>([]);
   const [account, setAccount] = useState<any>(null); // 只用来判断账号是否被停用/到期
+  const [masterSubToken, setMasterSubToken] = useState("");
   const [loading, setLoading] = useState(true);
 
   const subUrl = (token: string) => `${window.location.origin}/api/v1/open_api/sub?token=${token}`;
 
   const load = async () => {
     try {
-      const [ln, pkg] = await Promise.all([getMyLines(), getUserPackageInfo()]);
+      const [ln, pkg, master] = await Promise.all([getMyLines(), getUserPackageInfo(), getMyMasterSub()]);
       if (ln.code === 0) setLines(ln.data || []);
       if (pkg.code === 0) setAccount(pkg.data?.userInfo || null);
+      if (master.code === 0) setMasterSubToken(master.data?.masterSubToken || "");
     } catch (e) {
       toast.error("加载失败");
     }
@@ -49,6 +51,37 @@ export default function MySubPage() {
         <h1 className="text-xl font-bold">我的订阅</h1>
         <span className="text-sm text-default-500">共 {lines.length} 条线路,每条各自独立</span>
       </div>
+
+      {masterSubToken && (
+        <Card className="border border-primary/30 bg-primary/5">
+          <CardBody className="space-y-2">
+            <div className="font-semibold">⭐ 我的总订阅</div>
+            <Input
+              readOnly
+              size="sm"
+              value={subUrl(masterSubToken)}
+              onClick={(e: any) => { if (e.target?.select) e.target.select(); }}
+            />
+            <div className="flex gap-2 items-start">
+              <Button
+                size="sm"
+                color="primary"
+                onPress={async () => {
+                  (await copyTextToClipboard(subUrl(masterSubToken)))
+                    ? toast.success("已复制总订阅")
+                    : toast.error("复制失败,点框内已全选,按 Ctrl+C");
+                }}
+              >
+                复制总订阅
+              </Button>
+              <SubQrToggle url={subUrl(masterSubToken)} />
+            </div>
+            <div className="text-sm text-default-500">
+              总订阅会自动包含你当前所有已分配线路，新增或删除线路后只需更新这一条订阅。
+            </div>
+          </CardBody>
+        </Card>
+      )}
 
       {(accountDisabled || accountExpired) && (
         <Card className="border border-danger/40 bg-danger/5">

@@ -59,5 +59,7 @@ public class User extends BaseEntity {
 
     private Long flowResetTime;
 
+    private String masterSubToken;
+
 
 }

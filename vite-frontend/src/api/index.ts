@@ -84,6 +84,7 @@ export const assignAllToUser = (data: any) => Network.post("/inbound/assign-all"
 export const assignSelf = (data: any) => Network.post("/inbound/assign-self", data);
 export const unassignInboundUser = (id: number) => Network.post("/inbound/unassign", { id });
 export const getUserSub = (userId: number) => Network.post("/inbound/user-sub", { userId });
+export const getUserMasterSub = (userId: number) => Network.post("/inbound/user-master-sub", { userId });
 
 // 中转(前置机协议 + 落地出口):落地内联粘贴、测试、搭建
 export const oneClickRelay = (nodeId: number, link: string, name?: string, sni?: string) => Network.post("/inbound/one-click-relay", { nodeId, link, name, sni });
@@ -94,6 +95,7 @@ export const getLandingList = () => Network.post("/landing/list"); // 仅用于�
 export const getUserLines = (userId: number) => Network.post("/inbound/user-lines", { userId });
 // 车友自助:取我自己的订阅线路(不需要管理员权限)
 export const getMyLines = () => Network.post("/inbound/my-lines");
+export const getMyMasterSub = () => Network.post("/inbound/my-master-sub");
 
 // 版本信息 / 更新检查(后端拿构建时注入的 commit 跟 GitHub main 比)
 export const getVersionInfo = () => Network.post("/version/info");
@@ -114,4 +116,4 @@ export const updateConfig = (name: string, value: string) => Network.post("/conf
 // 验证码相关接口
 export const checkCaptcha = () => Network.post("/captcha/check");
 export const generateCaptcha = () => Network.post(`/captcha/generate`);
-export const verifyCaptcha = (data: { captchaId: string; trackData: string }) => Network.post("/captcha/verify", data); 
+export const verifyCaptcha = (data: { captchaId: string; trackData: string }) => Network.post("/captcha/verify", data);

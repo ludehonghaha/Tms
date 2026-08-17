@@ -121,6 +121,21 @@ public class InboundController extends BaseController {
         return R.ok(inboundService.getUserSubToken(Long.valueOf(String.valueOf(body.get("userId")))));
     }
 
+    /** 管理员取指定用户固定的总订阅 token。 */
+    @RequireRole
+    @PostMapping("/user-master-sub")
+    public R userMasterSub(@RequestBody Map<String, Object> body) {
+        Object userId = body.get("userId");
+        if (userId == null) {
+            return R.err("用户ID无效");
+        }
+        try {
+            return inboundService.getMasterSubToken(Long.valueOf(String.valueOf(userId)));
+        } catch (NumberFormatException e) {
+            return R.err("用户ID无效");
+        }
+    }
+
     /** 取某车友的所有订阅线路(车友×机器,直连/中转各一条) */
     @RequireRole
     @PostMapping("/user-lines")
@@ -136,6 +151,16 @@ public class InboundController extends BaseController {
             return R.err("未登录");
         }
         return inboundService.getUserLines(uid.longValue());
+    }
+
+    /** 车友自助:只取当前登录用户自己的固定总订阅 token。 */
+    @PostMapping("/my-master-sub")
+    public R myMasterSub() {
+        Integer uid = com.admin.common.utils.JwtUtil.getUserIdFromToken();
+        if (uid == null) {
+            return R.err("未登录");
+        }
+        return inboundService.getMasterSubToken(uid.longValue());
     }
 
     @LogAnnotation

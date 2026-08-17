@@ -620,8 +620,11 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         if (token == null || token.isEmpty()) {
             return "";
         }
-        List<InboundUser> ius = inboundUserMapper.selectList(
-                new QueryWrapper<InboundUser>().eq("sub_token", token));
+        User masterUser = userMapper.selectOne(new QueryWrapper<User>()
+                .eq("master_sub_token", token).last("limit 1"));
+        List<InboundUser> ius = masterUser != null
+                ? inboundUserMapper.selectList(new QueryWrapper<InboundUser>().eq("user_id", masterUser.getId()))
+                : inboundUserMapper.selectList(new QueryWrapper<InboundUser>().eq("sub_token", token));
         List<String> links = new java.util.ArrayList<>();
         for (InboundUser iu : ius) {
             if (iu.getStatus() != null && iu.getStatus() == 0) {
@@ -654,6 +657,34 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         InboundUser iu = inboundUserMapper.selectOne(new QueryWrapper<InboundUser>()
                 .eq("user_id", userId).isNotNull("sub_token").last("limit 1"));
         return (iu != null && iu.getSubToken() != null) ? iu.getSubToken() : "";
+    }
+
+    @Override
+    public R getMasterSubToken(Long userId) {
+        if (userId == null || userId <= 0) {
+            return R.err("用户ID无效");
+        }
+        String token = getOrCreateMasterSubToken(userId);
+        if (token == null) {
+            return R.err("用户不存在或总订阅创建失败");
+        }
+        JSONObject result = new JSONObject();
+        result.put("masterSubToken", token);
+        return R.ok(result);
+    }
+
+    /** 用户总订阅 token 只生成一次，之后无论增删线路都保持不变。 */
+    private synchronized String getOrCreateMasterSubToken(Long userId) {
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            return null;
+        }
+        if (user.getMasterSubToken() != null && !user.getMasterSubToken().isEmpty()) {
+            return user.getMasterSubToken();
+        }
+        String token = UUID.randomUUID().toString().replace("-", "");
+        user.setMasterSubToken(token);
+        return userMapper.updateById(user) > 0 ? token : null;
     }
 
     @Override

@@ -47,7 +47,8 @@ import {
   updateUserTunnel,
   getSpeedLimitList,
   resetUserFlow,
-  getUserLines
+  getUserLines,
+  getUserMasterSub
 } from '@/api';
 import { copyTextToClipboard } from '@/utils/clipboard';
 import { SubQrToggle } from '@/components/sub-qr';
@@ -176,18 +177,19 @@ export default function UserPage() {
   const { isOpen: isSubModalOpen, onOpen: onSubModalOpen, onClose: onSubModalClose } = useDisclosure();
   const [subLines, setSubLines] = useState<any[]>([]);
   const [subUserName, setSubUserName] = useState<string>('');
+  const [masterSubToken, setMasterSubToken] = useState<string>('');
   const subUrl = (token: string) => `${window.location.origin}/api/v1/open_api/sub?token=${token}`;
 
   const handleShowSub = async (user: User) => {
     try {
-      const res = await getUserLines(user.id);
-      const lines = res.code === 0 ? (res.data || []) : [];
-      if (!lines.length) {
-        toast.error('该车友还没分配任何线路,先去「协议管理」或「中转」分配');
+      const [linesRes, masterRes] = await Promise.all([getUserLines(user.id), getUserMasterSub(user.id)]);
+      if (masterRes.code !== 0 || !masterRes.data?.masterSubToken) {
+        toast.error(masterRes.msg || '获取总订阅失败');
         return;
       }
       setSubUserName(user.user);
-      setSubLines(lines);
+      setSubLines(linesRes.code === 0 ? (linesRes.data || []) : []);
+      setMasterSubToken(masterRes.data.masterSubToken);
       onSubModalOpen();
     } catch (e) {
       toast.error('获取订阅失败');
@@ -1508,10 +1510,38 @@ export default function UserPage() {
       {/* 订阅线路(合体面板:车友的每台机器一条订阅,直连/中转各一条) */}
       <Modal isOpen={isSubModalOpen} onClose={onSubModalClose} size="2xl" backdrop="blur" placement="center">
         <ModalContent>
-          <ModalHeader>🔗 {subUserName} 的订阅线路({subLines.length})</ModalHeader>
+          <ModalHeader>🔗 {subUserName} 的订阅</ModalHeader>
           <ModalBody className="space-y-3">
+            <Card className="border border-primary/30 bg-primary/5">
+              <CardBody className="space-y-2">
+                <div className="font-semibold">⭐ 总订阅</div>
+                <Input
+                  readOnly
+                  size="sm"
+                  value={subUrl(masterSubToken)}
+                  onClick={(e: any) => { if (e.target?.select) e.target.select(); }}
+                />
+                <div className="flex gap-2 items-start">
+                  <Button
+                    size="sm"
+                    color="primary"
+                    onPress={async () => {
+                      (await copyTextToClipboard(subUrl(masterSubToken)))
+                        ? toast.success('已复制总订阅')
+                        : toast.error('复制失败,点框内已全选,按 Ctrl+C');
+                    }}
+                  >
+                    复制总订阅
+                  </Button>
+                  <SubQrToggle url={subUrl(masterSubToken)} />
+                </div>
+                <div className="text-small text-default-500">
+                  总订阅会自动包含该用户当前所有已分配线路，新增或删除线路后只需更新这一条订阅。
+                </div>
+              </CardBody>
+            </Card>
             <div className="text-small text-default-500">
-              每台机器一条订阅(直连 / 中转各一条)。发对应的一条给车友:v2rayN → 订阅 → 添加 → 粘贴 → 更新。
+              独立线路订阅保持不变：每台机器一条订阅(直连 / 中转各一条)。
             </div>
             {subLines.map((ln: any, idx: number) => {
               const url = subUrl(ln.subToken);
@@ -1557,4 +1587,4 @@ export default function UserPage() {
       </div>
 
   );
-} 
+}
