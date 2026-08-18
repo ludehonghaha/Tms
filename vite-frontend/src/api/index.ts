@@ -93,6 +93,8 @@ export const getLandingList = () => Network.post("/landing/list"); // 仅用于�
 
 // 订阅按线路(车友×机器):一个车友的所有订阅线路
 export const getUserLines = (userId: number) => Network.post("/inbound/user-lines", { userId });
+export const updateInboundLineQuota = (data: { userId: number; nodeId: number; landingId: number | null; flow: number }) => Network.post("/inbound/line/update-quota", data);
+export const removeInboundLine = (data: { userId: number; nodeId: number; landingId: number | null }) => Network.post("/inbound/line/remove", data);
 // 车友自助:取我自己的订阅线路(不需要管理员权限)
 export const getMyLines = () => Network.post("/inbound/my-lines");
 export const getMyMasterSub = () => Network.post("/inbound/my-master-sub");

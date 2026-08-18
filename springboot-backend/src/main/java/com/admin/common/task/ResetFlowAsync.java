@@ -178,13 +178,16 @@ public class ResetFlowAsync {
      */
     private void resetProtocolLineFlow(User user) {
         try {
+            long now = System.currentTimeMillis();
+            // 已移除线路没有 Forward,但 archived used_flow 仍属于本账期,必须一并清零。
+            UpdateWrapper<InboundLine> archivedFlow = new UpdateWrapper<>();
+            archivedFlow.eq("user_id", user.getId()).set("used_flow", 0).set("updated_time", now);
+            inboundLineMapper.update(null, archivedFlow);
+
             List<InboundUser> ius = inboundUserMapper.selectList(
                     new QueryWrapper<InboundUser>().eq("user_id", user.getId()));
-            if (ius == null || ius.isEmpty()) {
-                return;
-            }
             int cleared = 0, resumed = 0;
-            for (InboundUser iu : ius) {
+            for (InboundUser iu : ius == null ? java.util.Collections.<InboundUser>emptyList() : ius) {
                 if (iu.getGostForwardId() == null) {
                     continue;
                 }
@@ -212,16 +215,13 @@ public class ResetFlowAsync {
             //    但只恢复「跑满配额」停的,已经到期的线路不能跟着复活 ——
             //    否则界面显示正常、实际转发还是停的(resumeForward 有到期守卫),
             //    车友看着能用却连不上。exp_time 为 0/NULL 表示永久。
-            if (cleared > 0) {
-                long now = System.currentTimeMillis();
-                UpdateWrapper<InboundLine> lw = new UpdateWrapper<>();
-                lw.eq("user_id", user.getId()).eq("status", 0)
-                  .and(w -> w.isNull("exp_time").or().le("exp_time", 0).or().gt("exp_time", now))
-                  .set("status", 1)
-                  .set("updated_time", now);
-                inboundLineMapper.update(null, lw);
-                log.info("用户[{}]协议线路流量已重置:清零 {} 条转发,恢复 {} 条", user.getUser(), cleared, resumed);
-            }
+            UpdateWrapper<InboundLine> lw = new UpdateWrapper<>();
+            lw.eq("user_id", user.getId()).eq("status", 0)
+              .and(w -> w.isNull("exp_time").or().le("exp_time", 0).or().gt("exp_time", now))
+              .set("status", 1)
+              .set("updated_time", now);
+            inboundLineMapper.update(null, lw);
+            log.info("用户[{}]协议线路流量已重置:清零 {} 条转发,恢复 {} 条", user.getUser(), cleared, resumed);
         } catch (Exception e) {
             log.info("重置协议线路流量失败(用户 {}): {}", user.getUser(), e.getMessage());
         }

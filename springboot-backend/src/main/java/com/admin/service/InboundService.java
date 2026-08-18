@@ -50,6 +50,12 @@ public interface InboundService extends IService<Inbound> {
     /** 取某车友的所有订阅线路(车友×机器):每台机器一条订阅[nodeId,nodeName,type直连/中转,landingName,协议数,subToken] */
     R getUserLines(Long userId);
 
+    /** 修改一条线路的流量配额(GB) */
+    R updateLineQuota(Long userId, Long nodeId, Long landingId, Long flow);
+
+    /** 移除一条线路的所有协议与转发,保留线路档案和历史用量 */
+    R removeLine(Long userId, Long nodeId, Long landingId);
+
     /** 取或创建某用户固定的总订阅 token */
     R getMasterSubToken(Long userId);
 }

@@ -360,28 +360,31 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             }
         }
 
-        // 3. 建该用户的 gost 前置转发(远程=127.0.0.1:入站口,绑限速/到期,归属车友)
+        // 3. 先取得线路最终配置;重新添加已移除线路时要沿用其保留的到期时间。
+        InboundLine line = getOrCreateLine(user.getId(), node.getId(), in.getLandingId(), dto.getFlow(), dto.getExpTime());
+
+        // 4. 建该用户的 gost 前置转发(远程=127.0.0.1:入站口,绑限速/到期,归属车友)
         ForwardDto fdto = new ForwardDto();
         fdto.setName("inbound-" + in.getId() + "-user-" + user.getId());
         fdto.setTunnelId(tunnel.getId().intValue());
         fdto.setRemoteAddr("127.0.0.1:" + in.getListenPort());
         fdto.setStrategy("fifo");
         fdto.setSpeedId(userLimiter); // 转发引用车友专属限速器
-        fdto.setExpTime(dto.getExpTime());
+        fdto.setExpTime(line.getExpTime());
         R fr = createForwardAutoPort(fdto, user, node.getId()); // 端口被占自动上移
         if (fr.getCode() != 0 || fr.getData() == null) {
             return R.err("建转发失败:" + fr.getMsg());
         }
         Forward forward = (Forward) fr.getData();
 
-        // 4. 流量配额写到用户(可空=不改)
+        // 5. 流量配额写到用户(可空=不改)
         if (dto.getFlow() != null) {
             user.setFlow(dto.getFlow());
             userMapper.updateById(user);
         }
 
-        // 5. 存 inbound_user(带该【线路】的订阅 token:车友×机器×落地组一条)
-        String subToken = getOrCreateLineSubToken(user.getId(), node.getId(), in.getLandingId());
+        // 6. 存 inbound_user(带该【线路】的订阅 token:车友×机器×落地组一条)
+        String subToken = line.getSubToken();
 
         InboundUser iu = new InboundUser();
         iu.setInboundId(in.getId());
@@ -393,6 +396,11 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         iu.setStatus(1);
         iu.setCreatedTime(System.currentTimeMillis());
         inboundUserMapper.insert(iu);
+
+        R lineAvailability = applyLineAvailability(line, true);
+        if (lineAvailability.getCode() != 0) {
+            return lineAvailability;
+        }
 
         // 6. 重推 sing-box 配置(users 里加上这个 uuid)
         R push = pushNodeSingbox(node.getId());
@@ -439,12 +447,16 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         }
         // 订阅按【线路】= 车友 × 机器 × 落地组:一组共享一条订阅 token;车友可有很多条线路
         java.util.Map<Long, String> lineTokens = new java.util.HashMap<>();
+        java.util.Map<Long, InboundLine> linesByNode = new java.util.HashMap<>();
+        java.util.Set<Long> touchedLineNodes = new java.util.HashSet<>();
         // 线路记录(流量配额/到期都记在它上面)必须在循环【之前】建好/更新:
         // 重新分配(续费、改配额)时协议往往已经全都分过了,循环会整个跳过,
         // 那样新填的配额和到期就永远写不进去 —— 用户那边看着"改了没反应"。
         if (dto.getNodeId() != null) {
-            lineTokens.put(dto.getNodeId(),
-                    getOrCreateLine(user.getId(), dto.getNodeId(), groupLanding, dto.getFlow(), dto.getExpTime()).getSubToken());
+            InboundLine line = getOrCreateLine(user.getId(), dto.getNodeId(), groupLanding, dto.getFlow(), dto.getExpTime());
+            linesByNode.put(dto.getNodeId(), line);
+            lineTokens.put(dto.getNodeId(), line.getSubToken());
+            touchedLineNodes.add(dto.getNodeId());
         }
         // 车友专属限速器(每车友唯一;每节点只推一次,该机所有协议共享;TCP+UDP 都靠服务级 `$` 限住、车友间独立)
         Integer userLimiter = (dto.getSpeedId() != null) ? perUserLimiterName(user.getId()) : null;
@@ -452,10 +464,15 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         java.util.Set<Long> limiterPushedNodes = new java.util.HashSet<>();
         int assigned = 0, skipped = 0, updated = 0;
         String firstError = null;
+        String lineAvailabilityError = null;
         for (Inbound in : inbounds) {
             if (in.getStatus() != null && in.getStatus() == 0) {
                 continue;
             }
+            InboundLine line = linesByNode.computeIfAbsent(in.getNodeId(),
+                    nid -> getOrCreateLine(user.getId(), nid, groupLanding, dto.getFlow(), dto.getExpTime()));
+            lineTokens.putIfAbsent(in.getNodeId(), line.getSubToken());
+            touchedLineNodes.add(in.getNodeId());
             InboundUser existed = inboundUserMapper.selectOne(new QueryWrapper<InboundUser>()
                     .eq("inbound_id", in.getId()).eq("user_id", user.getId()).last("limit 1"));
             if (existed != null) {
@@ -511,9 +528,8 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 limiterPushedNodes.add(node.getId());
             }
             // 这条线路(机器×落地组)的记录:承载订阅 token + 该线路的流量配额/到期;该组所有协议共享
-            String subToken = lineTokens.computeIfAbsent(node.getId(),
-                    nid -> getOrCreateLine(user.getId(), nid, groupLanding, dto.getFlow(), dto.getExpTime()).getSubToken());
-            R r = assignOneNoPush(in, node, user, userLimiter, dto.getExpTime(), subToken);
+            String subToken = line.getSubToken();
+            R r = assignOneNoPush(in, node, user, userLimiter, line.getExpTime(), subToken);
             if (r.getCode() != 0) {
                 if (firstError == null) firstError = r.getMsg();
                 skipped++;
@@ -522,9 +538,25 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             affectedNodes.add(node.getId());
             assigned++;
         }
-        // 每个受影响的节点只推一次配置(避免反复重启)
+        // 无论是新建还是已存在协议,本次触碰的每条线路都要按最终配额/到期重新判定一次。
+        for (Long nid : touchedLineNodes) {
+            InboundLine line = linesByNode.get(nid);
+            if (line != null) {
+                // 已移除线路只有真的重新拥有 InboundUser + Forward 后才能复活。
+                boolean reactivateRemoved = line.getStatus() == null || line.getStatus() != 2
+                        || !lineForwards(line.getUserId(), line.getNodeId(), line.getLandingId()).isEmpty();
+                R lineAvailability = applyLineAvailability(line, reactivateRemoved);
+                if (lineAvailability.getCode() != 0 && lineAvailabilityError == null) {
+                    lineAvailabilityError = lineAvailability.getMsg();
+                }
+            }
+        }
+        // 只有新增 sing-box 用户配置的节点才推送,单纯修改线路额度/到期不重启节点。
         for (Long nid : affectedNodes) {
             pushNodeSingbox(nid);
+        }
+        if (lineAvailabilityError != null) {
+            return R.err("线路状态同步失败: " + lineAvailabilityError);
         }
         // 结果里带回这条线路的订阅 token(机器卡分配 = 单机单落地组)
         String resultToken = (dto.getNodeId() != null)
@@ -715,9 +747,10 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             Long nodeId = k[0];
             Long landingId = (k[1] == 0L) ? null : k[1];
             Node node = nodeMapper.selectById(nodeId);
-            String token = null;
+            InboundLine lineRec = getLine(userId, nodeId, landingId);
+            String token = lineRec != null ? lineRec.getSubToken() : null;
             int count = 0;
-            long lineFlow = 0L; // 这条线路已用流量 = 该线路各协议对应转发的上下行之和
+            long lineFlow = lineRec == null || lineRec.getUsedFlow() == null ? 0L : lineRec.getUsedFlow();
             for (InboundUser iu : e.getValue()) {
                 count++;
                 if (token == null && iu.getSubToken() != null && !iu.getSubToken().isEmpty()) {
@@ -743,12 +776,12 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             }
             JSONObject line = new JSONObject();
             line.put("nodeId", nodeId);
+            line.put("landingId", landingId);
             line.put("nodeName", node != null ? node.getName() : ("机器#" + nodeId));
             line.put("type", landingId != null ? "relay" : "direct");
             line.put("landingName", landingName);
             line.put("flow", lineFlow); // 该线路已用流量(字节)
             // 该线路自己的配额/到期(线路表);quotaGb=0/null 表示不单独限,只受账号总量约束
-            InboundLine lineRec = getLine(userId, nodeId, landingId);
             line.put("quotaGb", lineRec != null ? lineRec.getFlow() : null);
             line.put("lineExpTime", lineRec != null ? lineRec.getExpTime() : null);
             line.put("lineStatus", lineRec != null ? lineRec.getStatus() : 1);
@@ -794,6 +827,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             line.setSubToken(getOrCreateLineSubToken(userId, nodeId, landingId));
             line.setFlow(quotaGb);
             line.setExpTime(expTime);
+            line.setUsedFlow(0L);
             line.setStatus(1);
             line.setCreatedTime(System.currentTimeMillis());
             line.setUpdatedTime(System.currentTimeMillis());
@@ -814,11 +848,123 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             changed = true;
         }
         if (changed) {
-            line.setStatus(1); // 重新分配/续费 → 恢复正常
             line.setUpdatedTime(System.currentTimeMillis());
             inboundLineMapper.updateById(line);
         }
         return line;
+    }
+
+    @Override
+    public R updateLineQuota(Long userId, Long nodeId, Long landingId, Long flow) {
+        if (userId == null || nodeId == null || flow == null || flow < 0) {
+            return R.err("线路参数无效");
+        }
+        InboundLine line = getLine(userId, nodeId, landingId);
+        if (line == null) {
+            return R.err("线路不存在");
+        }
+        line.setFlow(flow);
+        line.setUpdatedTime(System.currentTimeMillis());
+        inboundLineMapper.updateById(line);
+        return applyLineAvailability(line, false);
+    }
+
+    @Override
+    public R removeLine(Long userId, Long nodeId, Long landingId) {
+        if (userId == null || nodeId == null) {
+            return R.err("线路参数无效");
+        }
+        InboundLine line = getLine(userId, nodeId, landingId);
+        if (line == null) {
+            return R.err("线路不存在");
+        }
+        for (InboundUser iu : lineInboundUsers(userId, nodeId, landingId)) {
+            Forward forward = iu.getGostForwardId() == null ? null : forwardMapper.selectById(iu.getGostForwardId());
+            if (forward != null) {
+                long archived = (forward.getInFlow() == null ? 0L : forward.getInFlow())
+                        + (forward.getOutFlow() == null ? 0L : forward.getOutFlow());
+                R deleted = forwardService.deleteForward(forward.getId());
+                if (deleted.getCode() != 0) {
+                    return R.err("移除线路转发失败:" + deleted.getMsg());
+                }
+                line.setUsedFlow((line.getUsedFlow() == null ? 0L : line.getUsedFlow()) + archived);
+                line.setUpdatedTime(System.currentTimeMillis());
+                inboundLineMapper.updateById(line);
+            }
+            if (inboundUserMapper.deleteById(iu.getId()) <= 0) {
+                return R.err("移除线路协议记录失败");
+            }
+        }
+        line.setStatus(2);
+        line.setUpdatedTime(System.currentTimeMillis());
+        inboundLineMapper.updateById(line);
+        R pushed = pushNodeSingbox(nodeId);
+        return pushed.getCode() == 0 ? R.ok() : pushed;
+    }
+
+    /** 该线路当前尚存的协议用户记录。 */
+    private List<InboundUser> lineInboundUsers(Long userId, Long nodeId, Long landingId) {
+        QueryWrapper<Inbound> iw = new QueryWrapper<Inbound>().eq("node_id", nodeId);
+        if (landingId != null) {
+            iw.eq("landing_id", landingId);
+        } else {
+            iw.isNull("landing_id");
+        }
+        List<Inbound> inbounds = this.list(iw);
+        if (inbounds.isEmpty()) {
+            return java.util.Collections.emptyList();
+        }
+        List<Long> inboundIds = new java.util.ArrayList<>();
+        for (Inbound in : inbounds) {
+            inboundIds.add(in.getId());
+        }
+        return inboundUserMapper.selectList(new QueryWrapper<InboundUser>()
+                .eq("user_id", userId).in("inbound_id", inboundIds));
+    }
+
+    private List<Forward> lineForwards(Long userId, Long nodeId, Long landingId) {
+        List<Forward> forwards = new java.util.ArrayList<>();
+        for (InboundUser iu : lineInboundUsers(userId, nodeId, landingId)) {
+            if (iu.getGostForwardId() == null) {
+                continue;
+            }
+            Forward forward = forwardMapper.selectById(iu.getGostForwardId());
+            if (forward != null) {
+                forwards.add(forward);
+            }
+        }
+        return forwards;
+    }
+
+    /** 根据当前额度/到期状态暂停或恢复该线路;已移除线路除非真正重新分配,否则不复活。 */
+    private R applyLineAvailability(InboundLine line, boolean reactivateRemoved) {
+        if (line.getStatus() != null && line.getStatus() == 2 && !reactivateRemoved) {
+            return R.ok();
+        }
+        long used = line.getUsedFlow() == null ? 0L : line.getUsedFlow();
+        List<Forward> forwards = lineForwards(line.getUserId(), line.getNodeId(), line.getLandingId());
+        for (Forward forward : forwards) {
+            used += (forward.getInFlow() == null ? 0L : forward.getInFlow())
+                    + (forward.getOutFlow() == null ? 0L : forward.getOutFlow());
+        }
+        boolean expired = line.getExpTime() != null && line.getExpTime() > 0
+                && line.getExpTime() <= System.currentTimeMillis();
+        boolean overQuota = line.getFlow() != null && line.getFlow() > 0
+                && used >= line.getFlow() * 1024L * 1024L * 1024L;
+        boolean pause = expired || overQuota;
+        for (Forward forward : forwards) {
+            if (pause && (forward.getStatus() == null || forward.getStatus() != 0)) {
+                R result = forwardService.pauseForward(forward.getId());
+                if (result.getCode() != 0) return result;
+            } else if (!pause && (forward.getStatus() == null || forward.getStatus() != 1)) {
+                R result = forwardService.resumeForward(forward.getId());
+                if (result.getCode() != 0) return result;
+            }
+        }
+        line.setStatus(pause ? 0 : 1);
+        line.setUpdatedTime(System.currentTimeMillis());
+        inboundLineMapper.updateById(line);
+        return R.ok();
     }
 
     /**

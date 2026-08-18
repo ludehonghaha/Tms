@@ -303,7 +303,8 @@ public class FlowController extends BaseController {
 
             boolean overFlow = false;
             if (line.getFlow() != null && line.getFlow() > 0) {
-                long used = sumLineFlow(iu.getUserId(), in.getNodeId(), in.getLandingId());
+                long used = (line.getUsedFlow() == null ? 0L : line.getUsedFlow())
+                        + sumLineFlow(iu.getUserId(), in.getNodeId(), in.getLandingId());
                 overFlow = used >= line.getFlow() * BYTES_TO_GB;
             }
             boolean expired = line.getExpTime() != null && line.getExpTime() > 0 && line.getExpTime() <= System.currentTimeMillis();
@@ -321,7 +322,7 @@ public class FlowController extends BaseController {
         }
     }
 
-    /** 汇总某条线路已用流量(该线路各协议对应转发的上下行之和) */
+    /** 汇总某条线路当前转发的上下行之和(不包含 InboundLine.usedFlow)。 */
     private long sumLineFlow(Long userId, Long nodeId, Long landingId) {
         long total = 0L;
         for (Forward f : lineForwards(userId, nodeId, landingId)) {

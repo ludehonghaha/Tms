@@ -11,7 +11,7 @@ import java.io.Serializable;
  * 线路 = 车友 × 机器 × 落地组。
  * landing_id 空=该机器的直连线路;非空=该落地的中转线路。
  * 同机的直连和每个中转各算一条线路:各一条订阅、各一份流量/到期配额。
- * 已用流量不存这里,实时汇总该线路各协议对应转发的 in_flow+out_flow。
+ * 已用流量 = archived used_flow + 当前转发的 in_flow+out_flow。
  * </p>
  *
  * @author QAQ
@@ -43,7 +43,10 @@ public class InboundLine implements Serializable {
     /** 该线路到期时间(epoch ms);空=不单独限 */
     private Long expTime;
 
-    /** 1=正常 0=已停(超额/到期) */
+    /** 已移除协议归档的历史用量(字节) */
+    private Long usedFlow;
+
+    /** 1=正常 0=已停(超额/到期) 2=管理员已移除 */
     private Integer status;
 
     private Long createdTime;

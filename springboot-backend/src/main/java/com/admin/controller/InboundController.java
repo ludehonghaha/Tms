@@ -143,6 +143,47 @@ public class InboundController extends BaseController {
         return inboundService.getUserLines(Long.valueOf(String.valueOf(body.get("userId"))));
     }
 
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/line/update-quota")
+    public R updateLineQuota(@RequestBody Map<String, Object> body) {
+        try {
+            Object userId = body.get("userId");
+            Object nodeId = body.get("nodeId");
+            Object flow = body.get("flow");
+            if (userId == null || nodeId == null || flow == null) {
+                return R.err("线路参数不完整");
+            }
+            Long quota = Long.valueOf(String.valueOf(flow));
+            if (quota < 0) {
+                return R.err("流量配额不能小于0");
+            }
+            Long landingId = body.get("landingId") == null ? null : Long.valueOf(String.valueOf(body.get("landingId")));
+            return inboundService.updateLineQuota(Long.valueOf(String.valueOf(userId)),
+                    Long.valueOf(String.valueOf(nodeId)), landingId, quota);
+        } catch (NumberFormatException e) {
+            return R.err("线路参数无效");
+        }
+    }
+
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/line/remove")
+    public R removeLine(@RequestBody Map<String, Object> body) {
+        try {
+            Object userId = body.get("userId");
+            Object nodeId = body.get("nodeId");
+            if (userId == null || nodeId == null) {
+                return R.err("线路参数不完整");
+            }
+            Long landingId = body.get("landingId") == null ? null : Long.valueOf(String.valueOf(body.get("landingId")));
+            return inboundService.removeLine(Long.valueOf(String.valueOf(userId)),
+                    Long.valueOf(String.valueOf(nodeId)), landingId);
+        } catch (NumberFormatException e) {
+            return R.err("线路参数无效");
+        }
+    }
+
     /** 车友自助:取【我自己】的订阅线路(不需要管理员权限,只能看自己的) */
     @PostMapping("/my-lines")
     public R myLines() {

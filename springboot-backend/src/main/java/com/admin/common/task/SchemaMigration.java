@@ -38,6 +38,8 @@ public class SchemaMigration implements ApplicationRunner {
                 "ALTER TABLE `node` ADD COLUMN `domain` VARCHAR(255) NULL COMMENT '连接域名(可选,留空用 server_ip)'");
         addColumnIfMissing("user", "master_sub_token",
                 "ALTER TABLE `user` ADD COLUMN `master_sub_token` VARCHAR(100) NULL COMMENT '用户总订阅 token'");
+        addColumnIfMissing("inbound_line", "used_flow",
+                "ALTER TABLE `inbound_line` ADD COLUMN `used_flow` BIGINT NOT NULL DEFAULT 0 COMMENT '已移除协议归档流量(字节)'");
     }
 
     /** 列不存在才执行 ddl;任何异常都吞掉(只记日志),不能因为迁移失败导致面板起不来 */

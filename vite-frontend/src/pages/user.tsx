@@ -48,7 +48,9 @@ import {
   getSpeedLimitList,
   resetUserFlow,
   getUserLines,
-  getUserMasterSub
+  getUserMasterSub,
+  updateInboundLineQuota,
+  removeInboundLine
 } from '@/api';
 import { copyTextToClipboard } from '@/utils/clipboard';
 import { SubQrToggle } from '@/components/sub-qr';
@@ -177,8 +179,21 @@ export default function UserPage() {
   const { isOpen: isSubModalOpen, onOpen: onSubModalOpen, onClose: onSubModalClose } = useDisclosure();
   const [subLines, setSubLines] = useState<any[]>([]);
   const [subUserName, setSubUserName] = useState<string>('');
+  const [subUserId, setSubUserId] = useState<number | null>(null);
   const [masterSubToken, setMasterSubToken] = useState<string>('');
+  const { isOpen: isLineQuotaModalOpen, onOpen: onLineQuotaModalOpen, onClose: onLineQuotaModalClose } = useDisclosure();
+  const { isOpen: isRemoveLineModalOpen, onOpen: onRemoveLineModalOpen, onClose: onRemoveLineModalClose } = useDisclosure();
+  const [selectedLine, setSelectedLine] = useState<any>(null);
+  const [lineQuota, setLineQuota] = useState('0');
+  const [lineActionLoading, setLineActionLoading] = useState(false);
   const subUrl = (token: string) => `${window.location.origin}/api/v1/open_api/sub?token=${token}`;
+
+  const refreshSubLines = async () => {
+    if (subUserId === null) return;
+    const res = await getUserLines(subUserId);
+    if (res.code === 0) setSubLines(res.data || []);
+    else toast.error(res.msg || '刷新订阅线路失败');
+  };
 
   const handleShowSub = async (user: User) => {
     try {
@@ -188,11 +203,75 @@ export default function UserPage() {
         return;
       }
       setSubUserName(user.user);
+      setSubUserId(user.id);
       setSubLines(linesRes.code === 0 ? (linesRes.data || []) : []);
       setMasterSubToken(masterRes.data.masterSubToken);
       onSubModalOpen();
     } catch (e) {
       toast.error('获取订阅失败');
+    }
+  };
+
+  const handleEditLineQuota = (line: any) => {
+    setSelectedLine(line);
+    setLineQuota(String(line.quotaGb ?? 0));
+    onLineQuotaModalOpen();
+  };
+
+  const handleConfirmLineQuota = async () => {
+    if (!selectedLine || subUserId === null) return;
+    const flow = Number(lineQuota);
+    if (!Number.isInteger(flow) || flow < 0) {
+      toast.error('请输入大于等于0的整数 GB');
+      return;
+    }
+    setLineActionLoading(true);
+    try {
+      const res = await updateInboundLineQuota({
+        userId: subUserId,
+        nodeId: selectedLine.nodeId,
+        landingId: selectedLine.landingId ?? null,
+        flow
+      });
+      if (res.code !== 0) {
+        toast.error(res.msg || '修改限额失败');
+        return;
+      }
+      toast.success('线路限额已更新，订阅 URL 未变');
+      onLineQuotaModalClose();
+      await refreshSubLines();
+    } catch (e) {
+      toast.error('修改限额失败');
+    } finally {
+      setLineActionLoading(false);
+    }
+  };
+
+  const handleRemoveLine = (line: any) => {
+    setSelectedLine(line);
+    onRemoveLineModalOpen();
+  };
+
+  const handleConfirmRemoveLine = async () => {
+    if (!selectedLine || subUserId === null) return;
+    setLineActionLoading(true);
+    try {
+      const res = await removeInboundLine({
+        userId: subUserId,
+        nodeId: selectedLine.nodeId,
+        landingId: selectedLine.landingId ?? null
+      });
+      if (res.code !== 0) {
+        toast.error(res.msg || '移除线路失败');
+        return;
+      }
+      toast.success('线路已移除，历史记录已保留');
+      onRemoveLineModalClose();
+      await refreshSubLines();
+    } catch (e) {
+      toast.error('移除线路失败');
+    } finally {
+      setLineActionLoading(false);
     }
   };
   const [tunnelToReset, setTunnelToReset] = useState<UserTunnel | null>(null);
@@ -1553,7 +1632,12 @@ export default function UserPage() {
                       {isRelay ? `🔀 中转${ln.landingName ? '→' + ln.landingName : ''}` : '🖥️ 直连'}
                     </Chip>
                     <span className="font-medium truncate">{ln.nodeName}</span>
+                    {ln.lineStatus === 2 && <Chip size="sm" color="danger" variant="flat">已移除</Chip>}
                     <Chip size="sm" variant="flat">{ln.protocolCount} 协议</Chip>
+                  </div>
+                  <div className="flex gap-4 text-small text-default-600">
+                    <span>已用流量：{formatFlow(ln.flow || 0)}</span>
+                    <span>线路限额：{ln.quotaGb ? `${ln.quotaGb} GB` : '不限流'}</span>
                   </div>
                   <Input
                     readOnly
@@ -1574,6 +1658,12 @@ export default function UserPage() {
                       复制这条
                     </Button>
                     <SubQrToggle url={url} />
+                    <Button size="sm" variant="flat" color="warning" onPress={() => handleEditLineQuota(ln)}>
+                      修改限额
+                    </Button>
+                    <Button size="sm" variant="flat" color="danger" onPress={() => handleRemoveLine(ln)}>
+                      移除线路
+                    </Button>
                   </div>
                 </div>
               );
@@ -1581,6 +1671,40 @@ export default function UserPage() {
           </ModalBody>
           <ModalFooter>
             <Button variant="light" onPress={onSubModalClose}>关闭</Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+
+      <Modal isOpen={isLineQuotaModalOpen} onClose={onLineQuotaModalClose} size="sm" backdrop="blur" placement="center">
+        <ModalContent>
+          <ModalHeader>修改线路限额</ModalHeader>
+          <ModalBody>
+            <Input
+              label="流量配额（GB）"
+              type="number"
+              min="0"
+              step="1"
+              value={lineQuota}
+              onChange={(e) => setLineQuota(e.target.value)}
+              description="0 表示不限流；不会更换该线路订阅 URL。"
+            />
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="light" onPress={onLineQuotaModalClose}>取消</Button>
+            <Button color="warning" onPress={handleConfirmLineQuota} isLoading={lineActionLoading}>确认修改</Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+
+      <Modal isOpen={isRemoveLineModalOpen} onClose={onRemoveLineModalClose} size="sm" backdrop="blur" placement="center">
+        <ModalContent>
+          <ModalHeader>确认移除线路</ModalHeader>
+          <ModalBody className="text-sm text-default-600">
+            仅移除该用户的这条线路，不会删除服务器节点；历史用量、限额和订阅记录会保留，重新添加同一线路时恢复。
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="light" onPress={onRemoveLineModalClose}>取消</Button>
+            <Button color="danger" onPress={handleConfirmRemoveLine} isLoading={lineActionLoading}>移除线路</Button>
           </ModalFooter>
         </ModalContent>
       </Modal>
