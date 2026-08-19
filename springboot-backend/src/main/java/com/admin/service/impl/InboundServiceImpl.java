@@ -915,23 +915,46 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         return R.ok();
     }
 
-    /** 给 hybrid 转发分配高段公网口(20000-39999),避开被占的低端口 + sing-box 段(40000+) */
+    /**
+     * 给协议托管转发找一个候选公网端口。
+     * 必须尊重每台节点自己的 port_sta ~ port_end，不能写死固定端口段。
+     */
     private Integer allocateHybridPort(Long nodeId) {
+        Node node = nodeMapper.selectById(nodeId);
+        if (node == null || node.getPortSta() == null || node.getPortEnd() == null
+                || node.getPortSta() > node.getPortEnd()) {
+            return null;
+        }
+
         java.util.Set<Integer> used = new java.util.HashSet<>();
-        List<Tunnel> tunnels = tunnelMapper.selectList(new QueryWrapper<Tunnel>().eq("in_node_id", nodeId));
+
+        // 已有 GOST 公网转发端口
+        List<Tunnel> tunnels = tunnelMapper.selectList(
+                new QueryWrapper<Tunnel>().eq("in_node_id", nodeId));
         if (tunnels != null && !tunnels.isEmpty()) {
             java.util.List<Long> tids = new java.util.ArrayList<>();
             for (Tunnel t : tunnels) {
                 tids.add(t.getId());
             }
-            List<Forward> fs = forwardMapper.selectList(new QueryWrapper<Forward>().in("tunnel_id", tids));
+            List<Forward> fs = forwardMapper.selectList(
+                    new QueryWrapper<Forward>().in("tunnel_id", tids));
             for (Forward f : fs) {
                 if (f.getInPort() != null) {
                     used.add(f.getInPort());
                 }
             }
         }
-        for (int p = 20000; p <= 39999; p++) {
+
+        // sing-box 本地监听端口也避开，防止宽端口范围节点发生冲突。
+        List<Inbound> inbounds = this.list(
+                new QueryWrapper<Inbound>().eq("node_id", nodeId));
+        for (Inbound in : inbounds) {
+            if (in.getListenPort() != null) {
+                used.add(in.getListenPort());
+            }
+        }
+
+        for (int p = node.getPortSta(); p <= node.getPortEnd(); p++) {
             if (!used.contains(p)) {
                 return p;
             }
@@ -950,26 +973,48 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
     }
 
     /**
-     * 建 hybrid 转发,端口被占(DB 里占了 / 或节点 OS 层被残留服务占了)就自动往上找下一个可用,直到成功。
-     * createForwardForUser 失败时会自己 removeById 清理,所以重试很干净。
+     * 建协议托管转发。
+     * 从节点自己的允许端口范围内选择端口；DB/OS 层占用时自动继续向后尝试。
      */
     private R createForwardAutoPort(ForwardDto fdto, User user, Long nodeId) {
+        Node node = nodeMapper.selectById(nodeId);
+        if (node == null || node.getPortSta() == null || node.getPortEnd() == null
+                || node.getPortSta() > node.getPortEnd()) {
+            return R.err("节点端口范围配置无效");
+        }
+
         Integer start = allocateHybridPort(nodeId);
-        int from = (start != null) ? start : 20000;
-        for (int p = from; p <= 39999; p++) {
+        if (start == null) {
+            return R.err("节点允许端口范围 "
+                    + node.getPortSta() + "-" + node.getPortEnd()
+                    + " 内没有可用端口");
+        }
+
+        for (int p = start; p <= node.getPortEnd(); p++) {
             fdto.setInPort(p);
-            R fr = forwardService.createForwardForUser(fdto, user.getId().intValue(), user.getUser());
+            R fr = forwardService.createForwardForUser(
+                    fdto, user.getId().intValue(), user.getUser());
+
             if (fr.getCode() == 0 && fr.getData() != null) {
                 return fr;
             }
+
             String msg = fr.getMsg() == null ? "" : fr.getMsg();
-            // 端口被占(DB 已用 / OS 已用 / 不在范围)→ 换下一个;其他错误直接返回
-            if (msg.contains("already in use") || msg.contains("已被占用") || msg.contains("不在允许范围")) {
+
+            // DB 已占、底层端口校验冲突、节点 OS 实际被其它服务占用 → 继续下一个。
+            if (msg.contains("already in use")
+                    || msg.contains("address already")
+                    || msg.contains("已被占用")
+                    || msg.contains("不在允许范围")) {
                 continue;
             }
+
             return fr;
         }
-        return R.err("20000-39999 端口都被占,无法分配");
+
+        return R.err("节点允许端口范围 "
+                + node.getPortSta() + "-" + node.getPortEnd()
+                + " 内没有可用端口");
     }
 
     /** 确保节点有一条端口转发隧道(入口机=该节点),没有则建 */
