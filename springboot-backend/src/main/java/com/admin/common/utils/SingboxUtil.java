@@ -122,13 +122,33 @@ public class SingboxUtil {
                     continue; // 停用的入站不下发
                 }
                 List<InboundUser> users = usersByInbound != null ? usersByInbound.get(in.getId()) : null;
-                JSONObject inboundJson = buildInbound(in, users);
-                if (inboundJson == null) {
+
+                // 普通协议 = 一个逻辑 inbound 对应一个 sing-box inbound。
+                // SS-2022 = 一个逻辑 inbound 按车友展开成多个专属 loopback inbound，
+                // 从而让每条 GOST 公网转发只能命中该车友自己的 SS 密钥。
+                JSONArray activeTags = new JSONArray();
+                if ("shadowsocks".equalsIgnoreCase(in.getProtocol())) {
+                    JSONArray ssInbounds = buildShadowsocksUserInbounds(in, users);
+                    for (Object item : ssInbounds) {
+                        JSONObject ssInbound = (JSONObject) item;
+                        inboundArr.add(ssInbound);
+                        activeTags.add(ssInbound.getString("tag"));
+                    }
+                } else {
+                    JSONObject inboundJson = buildInbound(in, users);
+                    if (inboundJson != null) {
+                        inboundArr.add(inboundJson);
+                        activeTags.add(in.getTag());
+                    }
+                }
+
+                // 没有有效用户的 SS 不需要监听，也不需要生成落地路由。
+                if (activeTags.isEmpty()) {
                     continue;
                 }
-                inboundArr.add(inboundJson);
 
-                // 中转:该入站有落地 → 加落地出站(去重)+ 路由(该入站 tag → 落地出站)
+                // 中转:该入站有落地 → 加落地出站(去重)+ 路由。
+                // SS 会把该逻辑入站下所有车友专属 tag 一次性指向相同落地。
                 Long lid = in.getLandingId();
                 String obJson = (lid != null && landingOutbounds != null) ? landingOutbounds.get(lid) : null;
                 if (lid != null && obJson != null && !obJson.isEmpty()) {
@@ -139,9 +159,7 @@ public class SingboxUtil {
                         outbounds.add(ob);
                     }
                     JSONObject rule = new JSONObject();
-                    JSONArray inTags = new JSONArray();
-                    inTags.add(in.getTag());
-                    rule.put("inbound", inTags);
+                    rule.put("inbound", activeTags);
                     rule.put("outbound", tag);
                     routeRules.add(rule);
                 }
@@ -173,7 +191,8 @@ public class SingboxUtil {
             case "vmess":
                 return buildVmess(in, users);
             case "shadowsocks":
-                return buildShadowsocks(in);
+                // SS 需要按车友展开多个独立 loopback inbound，由 buildNodeConfig 专门处理。
+                return null;
             case "hysteria2":
                 return buildHysteria2(in, users);
             case "tuic":
@@ -186,19 +205,58 @@ public class SingboxUtil {
     }
 
     /**
-     * Shadowsocks-2022 入站(无 TLS、不依赖客户端指纹,绕开 reality 的后量子坑)。
-     * 单密码,用户靠各自的 gost 公网口区分/限速;method+password 存在 inbound.configJson。
+     * Shadowsocks-2022 每车友独立入站。
+     *
+     * 同一个逻辑 Inbound 仍共用 listen_port，但每个车友绑定不同的 127/8 loopback 地址。
+     * 因此:
+     *   GOST(A) -> 127.x.x.A:port -> 只接受 A 的 password
+     *   GOST(B) -> 127.x.x.B:port -> 只接受 B 的 password
+     *
+     * 这样 SS 的认证、限速、流量和到期真正一一对应。
      */
-    private static JSONObject buildShadowsocks(Inbound in) {
+    private static JSONArray buildShadowsocksUserInbounds(Inbound in, List<InboundUser> users) {
+        JSONArray result = new JSONArray();
+        if (users == null || users.isEmpty()) {
+            return result;
+        }
+
         JSONObject cfg = parseConfig(in.getConfigJson());
-        JSONObject inbound = new JSONObject();
-        inbound.put("type", "shadowsocks");
-        inbound.put("tag", in.getTag());
-        inbound.put("listen", "127.0.0.1");
-        inbound.put("listen_port", in.getListenPort());
-        inbound.put("method", cfg.getString("method"));
-        inbound.put("password", cfg.getString("password"));
-        return inbound;
+        String method = cfg.getString("method");
+
+        for (InboundUser u : users) {
+            if (u.getStatus() != null && u.getStatus() == 0) continue;
+            if (u.getUserId() == null) continue;
+            if (u.getPassword() == null || u.getPassword().isEmpty()) continue;
+
+            JSONObject inbound = new JSONObject();
+            inbound.put("type", "shadowsocks");
+            inbound.put("tag", in.getTag() + "-u-" + u.getUserId());
+            inbound.put("listen", ssUserLoopback(u.getUserId()));
+            inbound.put("listen_port", in.getListenPort());
+            inbound.put("method", method);
+            inbound.put("password", u.getPassword());
+
+            result.add(inbound);
+        }
+
+        return result;
+    }
+
+    /**
+     * 为 SS 车友稳定映射一个 127/8 loopback 地址。
+     * Linux 将整个 127.0.0.0/8 视为本机回环，无需额外配置网卡地址。
+     *
+     * 用户 ID 在 1600 万以内时一一对应；实际 TMS 用户规模远低于该范围。
+     */
+    public static String ssUserLoopback(Long userId) {
+        long raw = userId == null ? 0L : userId;
+        long n = Math.floorMod(raw, 16_777_214L) + 1L;
+
+        int a = (int) ((n >> 16) & 0xff);
+        int b = (int) ((n >> 8) & 0xff);
+        int c = (int) (n & 0xff);
+
+        return "127." + a + "." + b + "." + c;
     }
 
     /** 生成 Shadowsocks 客户端分享链接(SIP002:ss://base64url(method:password)@ip:port#remark)。地址=gost 公网口 */

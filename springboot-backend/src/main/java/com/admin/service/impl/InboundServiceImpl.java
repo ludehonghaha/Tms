@@ -114,11 +114,10 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
         // 按协议装配私有字段
         if ("shadowsocks".equals(protocol)) {
-            // SS-2022:无 TLS、不依赖客户端指纹,绕开 reality 的后量子坑;单密码,用户靠 gost 口区分
+            // SS-2022:每个车友使用独立 user key + 独立 loopback 入站，认证与 GOST 端口一一绑定
             in.setSecurity("none");
             JSONObject cfg = new JSONObject();
             cfg.put("method", "2022-blake3-aes-256-gcm");
-            cfg.put("password", genSsKey());
             in.setConfigJson(cfg.toJSONString());
         } else if ("vmess".equals(protocol)) {
             // VMess(TCP,无 TLS,无域名):无需密钥,用户 assign 时发 uuid
@@ -197,9 +196,9 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         if (node == null) {
             return R.err("节点不存在");
         }
-        // 支持的协议一键全建。SS 用不了,已去掉。
+        // 支持的协议一键全建，包含 Shadowsocks-2022 独立用户入站。
         String realitySni = realitySni(sni);
-        String[] protocols = {"vless", "trojan", "vmess", "hysteria2", "tuic", "anytls"};
+        String[] protocols = {"vless", "trojan", "vmess", "shadowsocks", "hysteria2", "tuic", "anytls"};
         List<Object> created = new java.util.ArrayList<>();
         for (String p : protocols) {
             InboundDto dto = new InboundDto();
@@ -239,7 +238,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         Long landingId = ((com.admin.entity.Landing) lr.getData()).getId();
         // 和一键搭协议一样建全套,只是每个入站带上 landing_id → 流量经该落地出网
         String realitySni = realitySni(sni);
-        String[] protocols = {"vless", "trojan", "vmess", "hysteria2", "tuic", "anytls"};
+        String[] protocols = {"vless", "trojan", "vmess", "shadowsocks", "hysteria2", "tuic", "anytls"};
         List<Object> created = new java.util.ArrayList<>();
         for (String p : protocols) {
             InboundDto dto = new InboundDto();
@@ -282,7 +281,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         return R.ok();
     }
 
-    /** SS-2022 密钥:32 字节随机 → 标准 base64(带 padding),sing-box 的 password 要这个格式 */
+    /** SS-2022 用户密钥:32 字节随机 → 标准 base64(带 padding) */
     private String genSsKey() {
         byte[] b = new byte[32];
         new java.security.SecureRandom().nextBytes(b);
@@ -348,7 +347,11 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
         // 2. 生成凭证(uuid 给 vless/vmess,password 给 trojan)
         String uuid = UUID.randomUUID().toString();
-        String password = UUID.randomUUID().toString().replace("-", "");
+        // SS-2022 aes-256 的 user key 需要 32 字节 base64；
+        // 其它协议继续使用原来的随机密码。
+        String password = "shadowsocks".equals(in.getProtocol())
+                ? genSsKey()
+                : UUID.randomUUID().toString().replace("-", "");
 
         // 2.5 若选了限速规则,下发【车友专属】限速器(mode=0 服务级 `$`,TCP+UDP 都限、车友间独立)
         Integer userLimiter = null;
@@ -364,7 +367,9 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         ForwardDto fdto = new ForwardDto();
         fdto.setName("inbound-" + in.getId() + "-user-" + user.getId());
         fdto.setTunnelId(tunnel.getId().intValue());
-        fdto.setRemoteAddr("127.0.0.1:" + in.getListenPort());
+        fdto.setRemoteAddr("shadowsocks".equals(in.getProtocol())
+                ? SingboxUtil.ssUserLoopback(user.getId()) + ":" + in.getListenPort()
+                : "127.0.0.1:" + in.getListenPort());
         fdto.setStrategy("fifo");
         fdto.setSpeedId(userLimiter); // 转发引用车友专属限速器
         fdto.setExpTime(dto.getExpTime());
@@ -559,11 +564,17 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             return R.err("创建入站转发隧道失败");
         }
         String uuid = UUID.randomUUID().toString();
-        String password = UUID.randomUUID().toString().replace("-", "");
+        // SS-2022 aes-256 的 user key 需要 32 字节 base64；
+        // 其它协议继续使用原来的随机密码。
+        String password = "shadowsocks".equals(in.getProtocol())
+                ? genSsKey()
+                : UUID.randomUUID().toString().replace("-", "");
         ForwardDto fdto = new ForwardDto();
         fdto.setName("inbound-" + in.getId() + "-user-" + user.getId());
         fdto.setTunnelId(tunnel.getId().intValue());
-        fdto.setRemoteAddr("127.0.0.1:" + in.getListenPort());
+        fdto.setRemoteAddr("shadowsocks".equals(in.getProtocol())
+                ? SingboxUtil.ssUserLoopback(user.getId()) + ":" + in.getListenPort()
+                : "127.0.0.1:" + in.getListenPort());
         fdto.setStrategy("fifo");
         fdto.setSpeedId(limiterName); // 转发引用车友专属限速器
         fdto.setExpTime(expTime);
@@ -598,7 +609,8 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         switch (in.getProtocol() == null ? "" : in.getProtocol()) {
             case "shadowsocks": {
                 JSONObject cfg = JSON.parseObject(in.getConfigJson() == null ? "{}" : in.getConfigJson());
-                return SingboxUtil.buildShadowsocksLink(ip, port, cfg.getString("method"), cfg.getString("password"), remark);
+                return SingboxUtil.buildShadowsocksLink(
+                        ip, port, cfg.getString("method"), iu.getPassword(), remark);
             }
             case "vmess":
                 return SingboxUtil.buildVmessLink(uuid, ip, port, remark);
