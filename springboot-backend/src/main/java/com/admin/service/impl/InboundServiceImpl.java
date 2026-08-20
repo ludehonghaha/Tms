@@ -113,11 +113,26 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         in.setUpdatedTime(System.currentTimeMillis());
 
         // 按协议装配私有字段
-        if ("shadowsocks".equals(protocol)) {
-            // SS-2022:每个车友使用独立 user key + 独立 loopback 入站，认证与 GOST 端口一一绑定
-            in.setSecurity("none");
+        if ("shadowsocks".equals(protocol) || "nb_ss_ssh".equals(protocol)) {
+            // SS-2022:每个车友使用独立 user key + 独立 loopback 入站。
+            // NB 版本不暴露公网 SS 端口：GOST 只监听 127.0.0.1，再由 SSH dialer 访问。
+            in.setSecurity("nb_ss_ssh".equals(protocol) ? "ssh" : "none");
             JSONObject cfg = new JSONObject();
             cfg.put("method", "2022-blake3-aes-256-gcm");
+            if ("nb_ss_ssh".equals(protocol)) {
+                if (dto.getSshPort() == null || dto.getSshPort() <= 0 || dto.getSshPort() > 65535) {
+                    return R.err("NB 7CM 需要填写有效 SSH 端口");
+                }
+                if (dto.getSshUsername() == null || dto.getSshUsername().trim().isEmpty()) {
+                    return R.err("NB 7CM 需要填写 SSH 用户名");
+                }
+                if (dto.getSshPrivateKey() == null || dto.getSshPrivateKey().trim().isEmpty()) {
+                    return R.err("NB 7CM 需要填写 SSH 私钥");
+                }
+                cfg.put("sshPort", dto.getSshPort());
+                cfg.put("sshUsername", dto.getSshUsername().trim());
+                cfg.put("sshPrivateKey", dto.getSshPrivateKey().trim());
+            }
             in.setConfigJson(cfg.toJSONString());
         } else if ("vmess".equals(protocol)) {
             // VMess(TCP,无 TLS,无域名):无需密钥,用户 assign 时发 uuid
@@ -340,7 +355,9 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         }
 
         // 1. 确保该节点有一条端口转发隧道(入口机=该节点)
-        Tunnel tunnel = ensurePortForwardTunnel(node.getId());
+        Tunnel tunnel = isNbSsSsh(in.getProtocol())
+                ? ensureNbLoopbackTunnel(node.getId())
+                : ensurePortForwardTunnel(node.getId());
         if (tunnel == null) {
             return R.err("创建入站转发隧道失败");
         }
@@ -349,7 +366,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         String uuid = UUID.randomUUID().toString();
         // SS-2022 aes-256 的 user key 需要 32 字节 base64；
         // 其它协议继续使用原来的随机密码。
-        String password = "shadowsocks".equals(in.getProtocol())
+        String password = isShadowsocksFamily(in.getProtocol())
                 ? genSsKey()
                 : UUID.randomUUID().toString().replace("-", "");
 
@@ -367,7 +384,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         ForwardDto fdto = new ForwardDto();
         fdto.setName("inbound-" + in.getId() + "-user-" + user.getId());
         fdto.setTunnelId(tunnel.getId().intValue());
-        fdto.setRemoteAddr("shadowsocks".equals(in.getProtocol())
+        fdto.setRemoteAddr(isShadowsocksFamily(in.getProtocol())
                 ? SingboxUtil.ssUserLoopback(user.getId()) + ":" + in.getListenPort()
                 : "127.0.0.1:" + in.getListenPort());
         fdto.setStrategy("fifo");
@@ -559,20 +576,22 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
     /** 给某用户在某入站上建凭证+转发,但不推 sing-box(批量分配时最后统一推)。limiterName=车友专属限速器名(调用方已推好) */
     private R assignOneNoPush(Inbound in, Node node, User user, Integer limiterName, Long expTime, String subToken) {
-        Tunnel tunnel = ensurePortForwardTunnel(node.getId());
+        Tunnel tunnel = isNbSsSsh(in.getProtocol())
+                ? ensureNbLoopbackTunnel(node.getId())
+                : ensurePortForwardTunnel(node.getId());
         if (tunnel == null) {
             return R.err("创建入站转发隧道失败");
         }
         String uuid = UUID.randomUUID().toString();
         // SS-2022 aes-256 的 user key 需要 32 字节 base64；
         // 其它协议继续使用原来的随机密码。
-        String password = "shadowsocks".equals(in.getProtocol())
+        String password = isShadowsocksFamily(in.getProtocol())
                 ? genSsKey()
                 : UUID.randomUUID().toString().replace("-", "");
         ForwardDto fdto = new ForwardDto();
         fdto.setName("inbound-" + in.getId() + "-user-" + user.getId());
         fdto.setTunnelId(tunnel.getId().intValue());
-        fdto.setRemoteAddr("shadowsocks".equals(in.getProtocol())
+        fdto.setRemoteAddr(isShadowsocksFamily(in.getProtocol())
                 ? SingboxUtil.ssUserLoopback(user.getId()) + ":" + in.getListenPort()
                 : "127.0.0.1:" + in.getListenPort());
         fdto.setStrategy("fifo");
@@ -607,6 +626,9 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 : node.getServerIp();
         Integer port = forward.getInPort();
         switch (in.getProtocol() == null ? "" : in.getProtocol()) {
+            case "nb_ss_ssh":
+                // 复合协议无法安全编码成单个 ss:// URI；走 /sub/mihomo YAML。
+                return "";
             case "shadowsocks": {
                 JSONObject cfg = JSON.parseObject(in.getConfigJson() == null ? "{}" : in.getConfigJson());
                 return SingboxUtil.buildShadowsocksLink(
@@ -658,6 +680,82 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         }
         String joined = String.join("\n", links);
         return java.util.Base64.getEncoder().encodeToString(joined.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    @Override
+    public String buildMihomoSubscription(String token) {
+        StringBuilder y = new StringBuilder("proxies:\n");
+        if (token == null || token.isEmpty()) {
+            return y.toString();
+        }
+
+        User masterUser = userMapper.selectOne(new QueryWrapper<User>()
+                .eq("master_sub_token", token).last("limit 1"));
+        List<InboundUser> ius = masterUser != null
+                ? inboundUserMapper.selectList(new QueryWrapper<InboundUser>().eq("user_id", masterUser.getId()))
+                : inboundUserMapper.selectList(new QueryWrapper<InboundUser>().eq("sub_token", token));
+
+        for (InboundUser iu : ius) {
+            if (iu.getStatus() != null && iu.getStatus() == 0) continue;
+
+            Inbound in = this.getById(iu.getInboundId());
+            if (in == null || !isNbSsSsh(in.getProtocol()) || iu.getGostForwardId() == null) continue;
+
+            Node node = nodeMapper.selectById(in.getNodeId());
+            Forward forward = forwardMapper.selectById(iu.getGostForwardId());
+            if (node == null || forward == null) continue;
+
+            JSONObject cfg = JSON.parseObject(in.getConfigJson() == null ? "{}" : in.getConfigJson());
+            Integer sshPort = cfg.getInteger("sshPort");
+            String sshUsername = cfg.getString("sshUsername");
+            String sshPrivateKey = cfg.getString("sshPrivateKey");
+            String method = cfg.getString("method");
+            if (sshPort == null || sshUsername == null || sshPrivateKey == null || iu.getPassword() == null) {
+                continue;
+            }
+            if (method == null || method.isEmpty()) {
+                method = "2022-blake3-aes-256-gcm";
+            }
+
+            String sshServer = (node.getDomain() != null && !node.getDomain().trim().isEmpty())
+                    ? node.getDomain().trim()
+                    : node.getServerIp();
+            String baseName = (in.getRemark() != null && !in.getRemark().trim().isEmpty())
+                    ? in.getRemark().trim()
+                    : (node.getName() + "-NB7CM");
+            String sshName = baseName + "-SSH-" + iu.getId();
+            String ssName = baseName + "-SS-" + iu.getId();
+
+            y.append("  - name: ").append(yamlQuote(sshName)).append("\n");
+            y.append("    type: ssh\n");
+            y.append("    server: ").append(yamlQuote(sshServer)).append("\n");
+            y.append("    port: ").append(sshPort).append("\n");
+            y.append("    username: ").append(yamlQuote(sshUsername)).append("\n");
+            y.append("    private-key: |\n");
+            for (String line : sshPrivateKey.replace("\r", "").split("\n", -1)) {
+                y.append("      ").append(line).append("\n");
+            }
+
+            y.append("  - name: ").append(yamlQuote(ssName)).append("\n");
+            y.append("    type: ss\n");
+            y.append("    server: 127.0.0.1\n");
+            y.append("    port: ").append(forward.getInPort()).append("\n");
+            y.append("    cipher: ").append(yamlQuote(method)).append("\n");
+            y.append("    password: ").append(yamlQuote(iu.getPassword())).append("\n");
+            y.append("    udp: false\n");
+            y.append("    dialer-proxy: ").append(yamlQuote(sshName)).append("\n");
+            y.append("    smux:\n");
+            y.append("      enabled: true\n");
+            y.append("      protocol: smux\n");
+            y.append("      only-tcp: true\n");
+        }
+        return y.toString();
+    }
+
+    private String yamlQuote(String s) {
+        if (s == null) return "\"\"";
+        return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"")
+                .replace("\r", "").replace("\n", "\\n") + "\"";
     }
 
     @Override
@@ -729,9 +827,14 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             Node node = nodeMapper.selectById(nodeId);
             String token = null;
             int count = 0;
+            boolean hasNbSsSsh = false;
             long lineFlow = 0L; // 这条线路已用流量 = 该线路各协议对应转发的上下行之和
             for (InboundUser iu : e.getValue()) {
                 count++;
+                Inbound protocolInbound = this.getById(iu.getInboundId());
+                if (protocolInbound != null && isNbSsSsh(protocolInbound.getProtocol())) {
+                    hasNbSsSsh = true;
+                }
                 if (token == null && iu.getSubToken() != null && !iu.getSubToken().isEmpty()) {
                     token = iu.getSubToken();
                 }
@@ -766,6 +869,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             line.put("lineStatus", lineRec != null ? lineRec.getStatus() : 1);
             line.put("protocolCount", count);
             line.put("subToken", token);
+            line.put("subFormat", hasNbSsSsh ? "mihomo" : "uri");
             lines.add(line);
         }
         return R.ok(lines);
@@ -1017,6 +1121,38 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 + " 内没有可用端口");
     }
 
+    /** NB SS-over-SSH 专用：GOST 只监听远端 127.0.0.1，公网绝不暴露 SS 端口。 */
+    private Tunnel ensureNbLoopbackTunnel(Long nodeId) {
+        String name = "nb-ssh-inbound-tunnel-node" + nodeId;
+        Tunnel tunnel = tunnelMapper.selectOne(new QueryWrapper<Tunnel>()
+                .eq("in_node_id", nodeId)
+                .eq("type", TUNNEL_TYPE_PORT_FORWARD)
+                .eq("name", name)
+                .last("limit 1"));
+        if (tunnel != null) {
+            return tunnel;
+        }
+
+        TunnelDto tdto = new TunnelDto();
+        tdto.setName(name);
+        tdto.setInNodeId(nodeId);
+        tdto.setType(TUNNEL_TYPE_PORT_FORWARD);
+        tdto.setFlow(1);
+        tdto.setTrafficRatio(BigDecimal.ONE);
+        tdto.setTcpListenAddr("127.0.0.1");
+        tdto.setUdpListenAddr("127.0.0.1");
+
+        R r = tunnelService.createTunnel(tdto);
+        if (r.getCode() != 0) {
+            return null;
+        }
+        return tunnelMapper.selectOne(new QueryWrapper<Tunnel>()
+                .eq("in_node_id", nodeId)
+                .eq("type", TUNNEL_TYPE_PORT_FORWARD)
+                .eq("name", name)
+                .last("limit 1"));
+    }
+
     /** 确保节点有一条端口转发隧道(入口机=该节点),没有则建 */
     private Tunnel ensurePortForwardTunnel(Long nodeId) {
         Tunnel tunnel = tunnelMapper.selectOne(new QueryWrapper<Tunnel>()
@@ -1049,6 +1185,14 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             }
         }
         return max + 1;
+    }
+
+    private boolean isNbSsSsh(String protocol) {
+        return "nb_ss_ssh".equalsIgnoreCase(protocol);
+    }
+
+    private boolean isShadowsocksFamily(String protocol) {
+        return "shadowsocks".equalsIgnoreCase(protocol) || isNbSsSsh(protocol);
     }
 
     /** 随机 8 位十六进制 shortId */

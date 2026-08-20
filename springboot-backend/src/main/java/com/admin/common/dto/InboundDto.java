@@ -28,5 +28,14 @@ public class InboundDto {
     /** 落地ID:空=直连(协议管理),有=中转(该入站经此落地出网) */
     private Long landingId;
 
+    /** NB 7CM SS-over-SSH: 外层 SSH 入口端口 */
+    private Integer sshPort;
+
+    /** NB 7CM SS-over-SSH: SSH 用户名 */
+    private String sshUsername;
+
+    /** NB 7CM SS-over-SSH: SSH 私钥内容(OpenSSH PEM/openssh-key-v1) */
+    private String sshPrivateKey;
+
     private String remark;
 }

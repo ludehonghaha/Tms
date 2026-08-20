@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Card, CardBody } from "@heroui/card";
 import { Button } from "@heroui/button";
-import { Input } from "@heroui/input";
+import { Input, Textarea } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
 import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter } from "@heroui/modal";
 import { Chip } from "@heroui/chip";
@@ -37,7 +37,16 @@ export default function InboundPage() {
   const [speedRules, setSpeedRules] = useState<any[]>([]);
 
   const [createOpen, setCreateOpen] = useState(false);
-  const [createForm, setCreateForm] = useState<any>({ nodeId: null, protocol: "vless", sni: DEFAULT_SNI, dest: "", remark: "" });
+  const [createForm, setCreateForm] = useState<any>({
+    nodeId: null,
+    protocol: "vless",
+    sni: DEFAULT_SNI,
+    dest: "",
+    remark: "",
+    sshPort: 13500,
+    sshUsername: "tunnel",
+    sshPrivateKey: "",
+  });
   const [createLoading, setCreateLoading] = useState(false);
 
   const [oneClickOpen, setOneClickOpen] = useState(false);
@@ -64,7 +73,8 @@ export default function InboundPage() {
     try {
       const res = await assignSelf({ nodeId });
       if (res.code === 0 && res.data?.subToken) {
-        setSelfSubUrl(`${window.location.origin}/api/v1/open_api/sub?token=${res.data.subToken}`);
+        const isNb = inbounds.some((ib) => ib.nodeId === nodeId && !ib.landingId && ib.protocol === "nb_ss_ssh");
+        setSelfSubUrl(`${window.location.origin}/api/v1/open_api/${isNb ? "sub/mihomo" : "sub"}?token=${res.data.subToken}`);
         setSelfOpen(true);
         loadAll();
       } else {
@@ -101,12 +111,17 @@ export default function InboundPage() {
   }, []);
 
   const protoLabel = (p: string) =>
-    (({ vless: "VLESS-Reality", trojan: "Trojan-Reality", vmess: "VMess", shadowsocks: "Shadowsocks-2022", hysteria2: "Hysteria2", tuic: "TUIC", anytls: "AnyTLS" } as any)[p] || p);
+    (({ vless: "VLESS-Reality", trojan: "Trojan-Reality", vmess: "VMess", shadowsocks: "Shadowsocks-2022", nb_ss_ssh: "NB 7CM - SS mux over SSH", hysteria2: "Hysteria2", tuic: "TUIC", anytls: "AnyTLS" } as any)[p] || p);
   const isReality = (p: string) => p === "vless" || p === "trojan";
 
   const handleCreate = async () => {
     if (!createForm.nodeId) return toast.error("请选择节点");
     if (isReality(createForm.protocol) && !createForm.sni) return toast.error("Reality 协议需要填 SNI");
+    if (createForm.protocol === "nb_ss_ssh") {
+      if (!createForm.sshPort) return toast.error("NB 7CM 需要填写 SSH 端口");
+      if (!createForm.sshUsername) return toast.error("NB 7CM 需要填写 SSH 用户名");
+      if (!createForm.sshPrivateKey?.trim()) return toast.error("NB 7CM 需要粘贴 SSH 私钥");
+    }
     setCreateLoading(true);
     try {
       const payload: any = {
@@ -117,6 +132,11 @@ export default function InboundPage() {
       if (isReality(createForm.protocol)) {
         payload.sni = cleanSni(createForm.sni);
         payload.dest = createForm.dest;
+      }
+      if (createForm.protocol === "nb_ss_ssh") {
+        payload.sshPort = Number(createForm.sshPort);
+        payload.sshUsername = createForm.sshUsername;
+        payload.sshPrivateKey = createForm.sshPrivateKey;
       }
       const res = await createInbound(payload);
       if (res.code === 0) {
@@ -219,7 +239,16 @@ export default function InboundPage() {
             color="primary"
             variant="flat"
             onPress={() => {
-              setCreateForm({ nodeId: null, protocol: "vless", sni: DEFAULT_SNI, dest: "", remark: "" });
+              setCreateForm({
+                nodeId: null,
+                protocol: "vless",
+                sni: DEFAULT_SNI,
+                dest: "",
+                remark: "",
+                sshPort: 13500,
+                sshUsername: "tunnel",
+                sshPrivateKey: "",
+              });
               setCreateOpen(true);
             }}
           >
@@ -422,6 +451,8 @@ export default function InboundPage() {
                   ? "无域名借 Reality(SNI 借壳),抗封锁强(推荐)"
                   : createForm.protocol === "vmess"
                   ? "VMess:TCP 无 TLS,无域名,兼容各种老客户端"
+                  : createForm.protocol === "nb_ss_ssh"
+                  ? "NB 7CM 移动入口专用：公网只走 SSH；SS-2022 与 GOST 仅监听远端回环地址，Mihomo/OpenClash 用 dialer-proxy + smux。不要用于普通 VPS。"
                   : ["hysteria2", "tuic", "anytls"].includes(createForm.protocol)
                   ? "自签证书(无域名);客户端需勾选\"允许不安全/insecure\"。Hy2/TUIC 是 QUIC,快"
                   : "Shadowsocks-2022:无 TLS、配置简单，适合小火箭 / Mihomo 系客户端"
@@ -430,7 +461,8 @@ export default function InboundPage() {
               <SelectItem key="vless">VLESS-Reality(无域名,推荐)</SelectItem>
               <SelectItem key="trojan">Trojan-Reality(无域名)</SelectItem>
               <SelectItem key="vmess">VMess(无域名,兼容老客户端)</SelectItem>
-              <SelectItem key="shadowsocks">Shadowsocks-2022(简单稳定)</SelectItem>
+              <SelectItem key="shadowsocks">Shadowsocks-2022(普通 VPS)</SelectItem>
+              <SelectItem key="nb_ss_ssh">NB 7CM - SS mux over SSH(移动入口专用)</SelectItem>
               <SelectItem key="hysteria2">Hysteria2(QUIC,快,自签证书)</SelectItem>
               <SelectItem key="tuic">TUIC(QUIC,自签证书)</SelectItem>
               <SelectItem key="anytls">AnyTLS(自签证书)</SelectItem>
@@ -445,6 +477,30 @@ export default function InboundPage() {
                 <SelectItem key={n.id}>{n.name}</SelectItem>
               ))}
             </Select>
+            {createForm.protocol === "nb_ss_ssh" && (
+              <>
+                <Input
+                  type="number"
+                  label="NB SSH 端口"
+                  value={String(createForm.sshPort ?? "")}
+                  onChange={(e) => setCreateForm({ ...createForm, sshPort: Number(e.target.value) })}
+                  description="你的 7CM SSH 外层入口端口，例如 13500"
+                />
+                <Input
+                  label="NB SSH 用户名"
+                  value={createForm.sshUsername}
+                  onChange={(e) => setCreateForm({ ...createForm, sshUsername: e.target.value })}
+                  description="例如 tunnel"
+                />
+                <Textarea
+                  minRows={6}
+                  label="NB SSH 私钥"
+                  value={createForm.sshPrivateKey}
+                  onChange={(e) => setCreateForm({ ...createForm, sshPrivateKey: e.target.value })}
+                  description="仅用于生成 Mihomo/OpenClash 的 SSH 外层配置；不要填公钥"
+                />
+              </>
+            )}
             {isReality(createForm.protocol) && (
               <>
                 <Autocomplete

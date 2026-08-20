@@ -127,7 +127,7 @@ public class SingboxUtil {
                 // SS-2022 = 一个逻辑 inbound 按车友展开成多个专属 loopback inbound，
                 // 从而让每条 GOST 公网转发只能命中该车友自己的 SS 密钥。
                 JSONArray activeTags = new JSONArray();
-                if ("shadowsocks".equalsIgnoreCase(in.getProtocol())) {
+                if (isShadowsocksFamily(in.getProtocol())) {
                     JSONArray ssInbounds = buildShadowsocksUserInbounds(in, users);
                     for (Object item : ssInbounds) {
                         JSONObject ssInbound = (JSONObject) item;
@@ -191,7 +191,8 @@ public class SingboxUtil {
             case "vmess":
                 return buildVmess(in, users);
             case "shadowsocks":
-                // SS 需要按车友展开多个独立 loopback inbound，由 buildNodeConfig 专门处理。
+            case "nb_ss_ssh":
+                // SS / NB SS-over-SSH 都按车友展开多个独立 loopback inbound，由 buildNodeConfig 专门处理。
                 return null;
             case "hysteria2":
                 return buildHysteria2(in, users);
@@ -236,6 +237,13 @@ public class SingboxUtil {
             inbound.put("method", method);
             inbound.put("password", u.getPassword());
 
+            // NB 7CM: SS 位于 SSH 隧道内，开启 sing-box inbound MUX 与 Mihomo smux 对接。
+            if ("nb_ss_ssh".equalsIgnoreCase(in.getProtocol())) {
+                JSONObject multiplex = new JSONObject();
+                multiplex.put("enabled", true);
+                inbound.put("multiplex", multiplex);
+            }
+
             result.add(inbound);
         }
 
@@ -257,6 +265,10 @@ public class SingboxUtil {
         int c = (int) (n & 0xff);
 
         return "127." + a + "." + b + "." + c;
+    }
+
+    private static boolean isShadowsocksFamily(String protocol) {
+        return "shadowsocks".equalsIgnoreCase(protocol) || "nb_ss_ssh".equalsIgnoreCase(protocol);
     }
 
     /** 生成 Shadowsocks 客户端分享链接(SIP002:ss://base64url(method:password)@ip:port#remark)。地址=gost 公网口 */

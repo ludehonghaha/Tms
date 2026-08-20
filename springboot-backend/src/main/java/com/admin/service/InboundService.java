@@ -44,6 +44,9 @@ public interface InboundService extends IService<Inbound> {
     /** 按订阅 token 生成该用户所有协议链接的 base64 订阅内容(客户端订阅用) */
     String buildSubscription(String token);
 
+    /** NB 7CM SS-over-SSH: 生成 Mihomo/OpenClash 可直接使用的 YAML 订阅 */
+    String buildMihomoSubscription(String token);
+
     /** 取某用户的订阅 token(兼容旧接口;订阅现在按线路,推荐 getUserLines) */
     String getUserSubToken(Long userId);
 
