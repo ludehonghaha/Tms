@@ -33,7 +33,7 @@ jobs:
 
       - name: Run network orchestration safety tests
         working-directory: springboot-backend
-        run: mvn -B -Dtest=NetworkOrchestrationSafetyTest test
+        run: mvn -B -Dtest=NetworkOrchestrationSafetyTest,NetworkOrchestrationChainValidationTest test
 
       - name: Compile and package backend
         working-directory: springboot-backend
