@@ -4,7 +4,6 @@ import com.admin.common.dto.GostDto;
 import com.admin.common.lang.R;
 import com.admin.common.utils.WebSocketServer;
 import com.admin.entity.Node;
-import com.admin.service.NodeService;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import lombok.extern.slf4j.Slf4j;
@@ -26,9 +25,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * Additive network-orchestration control plane.
  *
- * v1 intentionally does not rewrite existing Tunnel/Forward rows. It models
- * node groups, multi-hop chains and health state first; runtime compilation
- * into current TMS Tunnel/Forward operations comes in the next phase.
+ * The model is isolated from existing Tunnel/Forward/Inbound resources. Runtime
+ * compilation and Apply are handled by NetworkPlanCompiler/NetworkPlanApplyService.
  */
 @Slf4j
 @Service
@@ -97,10 +95,14 @@ public class NetworkOrchestrationService {
         Long groupId = nullableLong(body.get("groupId"));
         Long nodeId = nullableLong(body.get("nodeId"));
         if (groupId == null || nodeId == null) return R.err("groupId/nodeId不能为空");
+        if (!exists("SELECT COUNT(*) FROM node_group WHERE id=?", groupId)) return R.err("节点组不存在");
         if (nodeService.getById(nodeId) == null) return R.err("节点不存在");
         int priority = intValue(body.get("priority"), 100);
         int weight = Math.max(1, intValue(body.get("weight"), 1));
         Long probeId = nullableLong(body.get("healthProbeId"));
+        if (probeId != null && !exists("SELECT COUNT(*) FROM health_probe WHERE id=?", probeId)) {
+            return R.err("健康检查不存在");
+        }
         int status = intValue(body.get("status"), 1);
         long now = System.currentTimeMillis();
         Long id = nullableLong(body.get("id"));
@@ -138,7 +140,6 @@ public class NetworkOrchestrationService {
 
         List<Map<String, Object>> healthy = new ArrayList<>();
         for (Map<String, Object> row : rows) {
-            // Existing TMS Node status=1 means Agent online.
             if (intValue(row.get("node_status"), 0) != 1) continue;
             Object probeState = row.get("last_success");
             if (probeState != null && intValue(probeState, 0) != 1) continue;
@@ -183,6 +184,14 @@ public class NetworkOrchestrationService {
         return R.ok(chains);
     }
 
+    /**
+     * Save a chain atomically from the caller's perspective.
+     *
+     * All hop references are normalized and validated before the first INSERT,
+     * UPDATE or DELETE. This is important because returning R.err does not mark a
+     * Spring transaction rollback-only; validation must therefore be completed
+     * before any mutation occurs.
+     */
     @Transactional
     public R saveChain(Map<String, Object> body) {
         String name = text(body.get("name"));
@@ -191,9 +200,17 @@ public class NetworkOrchestrationService {
         int failover = intValue(body.get("failoverEnabled"), 1);
         String remark = text(body.get("remark"));
         int status = intValue(body.get("status"), 1);
-        long now = System.currentTimeMillis();
         Long id = nullableLong(body.get("id"));
 
+        ChainHopValidation hopValidation = validateChainHops(body.get("hops"));
+        if (hopValidation.error != null) return R.err(hopValidation.error);
+        List<Map<String, Object>> normalizedHops = hopValidation.hops;
+
+        if (id != null && !exists("SELECT COUNT(*) FROM network_chain WHERE id=?", id)) {
+            return R.err("链路不存在");
+        }
+
+        long now = System.currentTimeMillis();
         if (id == null) {
             KeyHolder holder = new GeneratedKeyHolder();
             jdbc.update(con -> {
@@ -209,36 +226,98 @@ public class NetworkOrchestrationService {
                 ps.setLong(7, now);
                 return ps;
             }, holder);
-            id = Objects.requireNonNull(holder.getKey()).longValue();
+            Number key = holder.getKey();
+            if (key == null) throw new IllegalStateException("network_chain主键获取失败");
+            id = key.longValue();
         } else {
             jdbc.update("UPDATE network_chain SET name=?,protocol=?,failover_enabled=?,remark=?,status=?,updated_time=? WHERE id=?",
                     name, protocol, failover, remark, status, now, id);
             jdbc.update("DELETE FROM network_chain_hop WHERE chain_id=?", id);
         }
 
-        Object hopsObj = body.get("hops");
-        if (hopsObj instanceof Collection<?> hops) {
-            Set<Integer> orders = new HashSet<>();
-            for (Object raw : hops) {
-                if (!(raw instanceof Map<?, ?> m)) continue;
-                Map<String, Object> hop = new LinkedHashMap<>();
-                m.forEach((k, v) -> hop.put(String.valueOf(k), v));
-                int order = intValue(hop.get("hopOrder"), 0);
-                if (order <= 0 || !orders.add(order)) return R.err("hopOrder必须为正数且不能重复");
-                String hopType = upper(hop.get("hopType"), "NODE");
-                Long nodeId = nullableLong(hop.get("nodeId"));
-                Long groupId = nullableLong(hop.get("groupId"));
-                if ("NODE".equals(hopType) && nodeId == null) return R.err("NODE Hop缺少nodeId");
-                if ("GROUP".equals(hopType) && groupId == null) return R.err("GROUP Hop缺少groupId");
-                if (!Set.of("NODE", "GROUP").contains(hopType)) return R.err("hopType仅支持NODE/GROUP");
-                jdbc.update("""
-                        INSERT INTO network_chain_hop(chain_id,hop_order,hop_type,node_id,group_id,transport,health_probe_id,status,created_time,updated_time)
-                        VALUES(?,?,?,?,?,?,?,?,?,?)
-                        """, id, order, hopType, nodeId, groupId, upper(hop.get("transport"), "AUTO"), nullableLong(hop.get("healthProbeId")),
-                        intValue(hop.get("status"), 1), now, now);
-            }
+        for (Map<String, Object> hop : normalizedHops) {
+            jdbc.update("""
+                    INSERT INTO network_chain_hop(chain_id,hop_order,hop_type,node_id,group_id,transport,health_probe_id,status,created_time,updated_time)
+                    VALUES(?,?,?,?,?,?,?,?,?,?)
+                    """, id,
+                    hop.get("hopOrder"), hop.get("hopType"), hop.get("nodeId"), hop.get("groupId"),
+                    hop.get("transport"), hop.get("healthProbeId"), hop.get("status"), now, now);
         }
         return R.ok(Map.of("id", id, "message", "保存成功"));
+    }
+
+    private ChainHopValidation validateChainHops(Object hopsObj) {
+        if (hopsObj == null) return new ChainHopValidation(List.of(), null);
+        if (!(hopsObj instanceof Collection<?> hops)) {
+            return new ChainHopValidation(List.of(), "hops必须为数组");
+        }
+
+        List<Map<String, Object>> normalized = new ArrayList<>();
+        Set<Integer> orders = new HashSet<>();
+        for (Object raw : hops) {
+            if (!(raw instanceof Map<?, ?> m)) {
+                return new ChainHopValidation(List.of(), "每个Hop必须为对象");
+            }
+            Map<String, Object> hop = new LinkedHashMap<>();
+            m.forEach((k, v) -> hop.put(String.valueOf(k), v));
+
+            int order;
+            Long nodeId;
+            Long groupId;
+            Long probeId;
+            int hopStatus;
+            try {
+                order = intValue(hop.get("hopOrder"), 0);
+                nodeId = nullableLong(hop.get("nodeId"));
+                groupId = nullableLong(hop.get("groupId"));
+                probeId = nullableLong(hop.get("healthProbeId"));
+                hopStatus = intValue(hop.get("status"), 1);
+            } catch (Exception e) {
+                return new ChainHopValidation(List.of(), "Hop数字字段格式不合法");
+            }
+
+            if (order <= 0 || !orders.add(order)) {
+                return new ChainHopValidation(List.of(), "hopOrder必须为正数且不能重复");
+            }
+            String hopType = upper(hop.get("hopType"), "NODE");
+            if (!Set.of("NODE", "GROUP").contains(hopType)) {
+                return new ChainHopValidation(List.of(), "hopType仅支持NODE/GROUP");
+            }
+            if (hopStatus != 0 && hopStatus != 1) {
+                return new ChainHopValidation(List.of(), "Hop status仅支持0/1");
+            }
+
+            if ("NODE".equals(hopType)) {
+                if (nodeId == null) return new ChainHopValidation(List.of(), "NODE Hop缺少nodeId");
+                if (nodeService.getById(nodeId) == null) {
+                    return new ChainHopValidation(List.of(), "NODE Hop引用的节点不存在: " + nodeId);
+                }
+                groupId = null;
+            } else {
+                if (groupId == null) return new ChainHopValidation(List.of(), "GROUP Hop缺少groupId");
+                if (!exists("SELECT COUNT(*) FROM node_group WHERE id=?", groupId)) {
+                    return new ChainHopValidation(List.of(), "GROUP Hop引用的节点组不存在: " + groupId);
+                }
+                nodeId = null;
+            }
+
+            if (probeId != null && !exists("SELECT COUNT(*) FROM health_probe WHERE id=?", probeId)) {
+                return new ChainHopValidation(List.of(), "Hop引用的健康检查不存在: " + probeId);
+            }
+
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("hopOrder", order);
+            out.put("hopType", hopType);
+            out.put("nodeId", nodeId);
+            out.put("groupId", groupId);
+            out.put("transport", upper(hop.get("transport"), "AUTO"));
+            out.put("healthProbeId", probeId);
+            out.put("status", hopStatus);
+            normalized.add(out);
+        }
+
+        normalized.sort(Comparator.comparingInt(h -> intValue(h.get("hopOrder"), 0)));
+        return new ChainHopValidation(normalized, null);
     }
 
     @Transactional
@@ -312,9 +391,9 @@ public class NetworkOrchestrationService {
     public R topology() {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("nodes", jdbc.queryForList("SELECT id,name,ip,server_ip,domain,version,port_sta,port_end,status FROM node ORDER BY id ASC"));
-        result.put("groups", ((R) listGroups()).getData());
-        result.put("chains", ((R) listChains()).getData());
-        result.put("probes", ((R) listProbes()).getData());
+        result.put("groups", listGroups().getData());
+        result.put("chains", listChains().getData());
+        result.put("probes", listProbes().getData());
         result.put("generatedAt", System.currentTimeMillis());
         return R.ok(result);
     }
@@ -334,7 +413,6 @@ public class NetworkOrchestrationService {
                 }
             }
         } catch (Exception e) {
-            // Tables may not exist yet during a failed/partial migration; never affect panel runtime.
             log.debug("健康检查调度暂不可用: {}", e.getMessage());
         }
     }
@@ -417,6 +495,11 @@ public class NetworkOrchestrationService {
         return candidates.get(0);
     }
 
+    private boolean exists(String sql, Object... args) {
+        Long count = jdbc.queryForObject(sql, Long.class, args);
+        return count != null && count > 0;
+    }
+
     private static JSONObject toJson(Object data) {
         if (data == null) return null;
         if (data instanceof JSONObject json) return json;
@@ -463,4 +546,6 @@ public class NetworkOrchestrationService {
         if (s == null || s.length() <= max) return s;
         return s.substring(0, max);
     }
+
+    private record ChainHopValidation(List<Map<String, Object>> hops, String error) {}
 }
