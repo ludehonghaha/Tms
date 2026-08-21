@@ -34,9 +34,9 @@ jobs:
           cache: maven
           cache-dependency-path: springboot-backend/pom.xml
 
-      - name: Run network orchestration safety tests
+      - name: Run orchestration and production safety tests
         working-directory: springboot-backend
-        run: mvn -B -Dtest=NetworkOrchestrationSafetyTest,NetworkOrchestrationChainValidationTest test
+        run: mvn -B -Dtest=SingboxUtilNbSsTests,NetworkOrchestrationSafetyTest,NetworkOrchestrationChainValidationTest test
 
       - name: Compile and package backend
         working-directory: springboot-backend
