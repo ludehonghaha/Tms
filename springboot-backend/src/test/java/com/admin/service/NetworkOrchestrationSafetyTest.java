@@ -401,7 +401,9 @@ class NetworkOrchestrationSafetyTest {
 
         @Override
         public int update(String sql, Object... args) {
-            if (sql.startsWith("UPDATE network_deployment SET state=")) {
+            if (sql.contains("SET state='ACTIVE'")) {
+                lastDeploymentState = "ACTIVE";
+            } else if (sql.startsWith("UPDATE network_deployment SET state=?")) {
                 lastDeploymentState = String.valueOf(args[0]);
             }
             return 1;
