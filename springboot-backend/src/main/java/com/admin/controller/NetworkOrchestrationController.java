@@ -4,6 +4,7 @@ import com.admin.common.annotation.RequireRole;
 import com.admin.common.aop.LogAnnotation;
 import com.admin.common.lang.R;
 import com.admin.service.NetworkOrchestrationService;
+import com.admin.service.NetworkPlanCompiler;
 import org.springframework.web.bind.annotation.*;
 
 import javax.annotation.Resource;
@@ -16,6 +17,9 @@ public class NetworkOrchestrationController {
 
     @Resource
     private NetworkOrchestrationService networkService;
+
+    @Resource
+    private NetworkPlanCompiler networkPlanCompiler;
 
     @LogAnnotation
     @RequireRole
@@ -78,6 +82,19 @@ public class NetworkOrchestrationController {
     @PostMapping("/chain/delete")
     public R deleteChain(@RequestBody Map<String, Object> body) {
         return networkService.deleteChain(Long.valueOf(body.get("id").toString()));
+    }
+
+    /**
+     * Compile a chain into a read-only Tunnel/Forward execution plan.
+     * This endpoint never changes tunnel/forward rows or Agent runtime state.
+     */
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/chain/dry-run")
+    public R dryRunChain(@RequestBody Map<String, Object> body) {
+        Object chainId = body.get("chainId");
+        if (chainId == null) return R.err("chainId不能为空");
+        return networkPlanCompiler.dryRun(Long.valueOf(chainId.toString()), body);
     }
 
     @LogAnnotation
