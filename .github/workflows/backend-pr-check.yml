@@ -8,6 +8,9 @@ on:
     paths:
       - 'springboot-backend/**'
       - 'vite-frontend/**'
+      - 'docker-compose-v4.yml'
+      - 'docker-compose-v6.yml'
+      - 'docker-compose-hybrid.yml'
       - '.github/workflows/backend-pr-check.yml'
 
 permissions:
@@ -64,3 +67,36 @@ jobs:
         env:
           NODE_OPTIONS: --max-old-space-size=2048
         run: npm run build
+
+  compose-validation:
+    name: Docker Compose safety config
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DB_NAME: gost
+      DB_USER: gost
+      DB_PASSWORD: ci-test-password
+      JWT_SECRET: ci-test-jwt-secret
+      BACKEND_PORT: '16365'
+      FRONTEND_PORT: '16366'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate IPv4 Compose with Apply default-off
+        run: |
+          docker compose -f docker-compose-v4.yml config > /tmp/v4.yml
+          grep -q 'TMS_NETWORK_APPLY_ENABLED: "false"' /tmp/v4.yml || grep -q 'TMS_NETWORK_APPLY_ENABLED: false' /tmp/v4.yml
+
+      - name: Validate IPv6 Compose with Apply default-off
+        run: |
+          docker compose -f docker-compose-v6.yml config > /tmp/v6.yml
+          grep -q 'TMS_NETWORK_APPLY_ENABLED: "false"' /tmp/v6.yml || grep -q 'TMS_NETWORK_APPLY_ENABLED: false' /tmp/v6.yml
+
+      - name: Validate Hybrid Compose and explicit Apply enable propagation
+        env:
+          TMS_NETWORK_APPLY_ENABLED: 'true'
+        run: |
+          docker compose -f docker-compose-hybrid.yml config > /tmp/hybrid.yml
+          grep -q 'TMS_NETWORK_APPLY_ENABLED: "true"' /tmp/hybrid.yml || grep -q 'TMS_NETWORK_APPLY_ENABLED: true' /tmp/hybrid.yml
