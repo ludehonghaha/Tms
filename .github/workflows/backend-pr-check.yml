@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   backend-build:
-    name: Maven package (Java 21)
+    name: Maven test + package (Java 21)
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -29,6 +29,10 @@ jobs:
           java-version: '21'
           cache: maven
           cache-dependency-path: springboot-backend/pom.xml
+
+      - name: Run network orchestration safety tests
+        working-directory: springboot-backend
+        run: mvn -B -Dtest=NetworkOrchestrationSafetyTest test
 
       - name: Compile and package backend
         working-directory: springboot-backend
