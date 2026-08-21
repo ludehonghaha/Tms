@@ -57,8 +57,10 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: vite-frontend
-        run: npm install --no-audit --no-fund
+        run: npm install --legacy-peer-deps --no-audit --no-fund
 
       - name: Build frontend
         working-directory: vite-frontend
+        env:
+          NODE_OPTIONS: --max-old-space-size=2048
         run: npm run build
