@@ -1,0 +1,120 @@
+name: Build Network Gray Images
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'springboot-backend/**'
+      - 'vite-frontend/**'
+      - '.github/workflows/network-gray-images.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: network-gray-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-gray-images:
+    name: Build amd64 gray images
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.ref == 'codex/feature-network-orchestration'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Resolve exact gray commit
+        id: gray
+        shell: bash
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          GRAY_SHA="${PR_HEAD_SHA:-${GITHUB_SHA}}"
+          if ! [[ "${GRAY_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid gray commit SHA: ${GRAY_SHA}" >&2
+            exit 1
+          fi
+          SHORT_SHA="${GRAY_SHA:0:12}"
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          TAG="network-gray-${SHORT_SHA}"
+          BACKEND="ghcr.io/${OWNER}/tms-backend:${TAG}"
+          FRONTEND="ghcr.io/${OWNER}/tms-frontend:${TAG}"
+
+          echo "gray_sha=${GRAY_SHA}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "backend=${BACKEND}" >> "$GITHUB_OUTPUT"
+          echo "frontend=${FRONTEND}" >> "$GITHUB_OUTPUT"
+
+          echo "GRAY_COMMIT=${GRAY_SHA}"
+          echo "GRAY_TAG=${TAG}"
+          echo "BACKEND_IMAGE=${BACKEND}"
+          echo "FRONTEND_IMAGE=${FRONTEND}"
+
+      - name: Checkout exact gray commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.gray.outputs.gray_sha }}
+
+      - name: Verify checkout commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ steps.gray.outputs.gray_sha }}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push uniquely tagged backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./springboot-backend
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.gray.outputs.backend }}
+          build-args: |
+            BUILD_COMMIT=${{ steps.gray.outputs.short_sha }}
+            BUILD_TIME=${{ github.event.pull_request.updated_at || github.event.repository.updated_at }}
+          cache-from: type=gha,scope=network-gray-backend
+          cache-to: type=gha,mode=max,scope=network-gray-backend
+
+      - name: Build and push uniquely tagged frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./vite-frontend
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.gray.outputs.frontend }}
+          cache-from: type=gha,scope=network-gray-frontend
+          cache-to: type=gha,mode=max,scope=network-gray-frontend
+
+      - name: Verify pushed images
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "${{ steps.gray.outputs.backend }}"
+          docker buildx imagetools inspect "${{ steps.gray.outputs.frontend }}"
+
+      - name: Publish gray image summary
+        shell: bash
+        run: |
+          {
+            echo "### Network gray images"
+            echo
+            echo "- Commit: \`${{ steps.gray.outputs.gray_sha }}\`"
+            echo "- Backend: \`${{ steps.gray.outputs.backend }}\`"
+            echo "- Frontend: \`${{ steps.gray.outputs.frontend }}\`"
+            echo "- Platform: \`linux/amd64\`"
+            echo "- No \`:latest\` tag is written by this workflow."
+          } >> "$GITHUB_STEP_SUMMARY"
