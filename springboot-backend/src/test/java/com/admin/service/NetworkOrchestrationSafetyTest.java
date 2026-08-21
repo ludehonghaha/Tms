@@ -19,12 +19,6 @@ class NetworkOrchestrationSafetyTest {
 
     @Test
     void dryRunIsReadOnlyAndBuildsExecutableTwoHopPlan() {
-        JdbcTemplate jdbc = mock(JdbcTemplate.class);
-        NodeService nodeService = mock(NodeService.class);
-        NetworkPlanCompiler compiler = new NetworkPlanCompiler();
-        ReflectionTestUtils.setField(compiler, "jdbc", jdbc);
-        ReflectionTestUtils.setField(compiler, "nodeService", nodeService);
-
         Map<String, Object> chain = new LinkedHashMap<>();
         chain.put("id", 1L);
         chain.put("name", "gray-a-b");
@@ -46,13 +40,30 @@ class NetworkOrchestrationSafetyTest {
         hop2.put("transport", "AUTO");
         hop2.put("health_probe_id", null);
 
-        when(jdbc.queryForList(anyString(), any(Object[].class))).thenAnswer(invocation -> {
-            String sql = invocation.getArgument(0, String.class);
-            if (sql.contains("FROM network_chain WHERE id=?")) return List.of(chain);
-            if (sql.contains("FROM network_chain_hop")) return List.of(hop1, hop2);
-            // no reusable tunnel and no reserved ports in this synthetic gray plan
-            return List.of();
-        });
+        JdbcTemplate jdbc = new JdbcTemplate() {
+            @Override
+            public List<Map<String, Object>> queryForList(String sql, Object... args) {
+                if (sql.contains("FROM network_chain WHERE id=?")) return List.of(chain);
+                if (sql.contains("FROM network_chain_hop")) return List.of(hop1, hop2);
+                // no reusable tunnel and no reserved ports in this synthetic gray plan
+                return List.of();
+            }
+
+            @Override
+            public int update(String sql, Object... args) {
+                throw new AssertionError("dry-run attempted JDBC mutation: " + sql);
+            }
+
+            @Override
+            public void execute(String sql) {
+                throw new AssertionError("dry-run attempted JDBC execute: " + sql);
+            }
+        };
+
+        NodeService nodeService = mock(NodeService.class);
+        NetworkPlanCompiler compiler = new NetworkPlanCompiler();
+        ReflectionTestUtils.setField(compiler, "jdbc", jdbc);
+        ReflectionTestUtils.setField(compiler, "nodeService", nodeService);
 
         Node a = node(1L, "A", "10.0.0.1", 13000, 13010);
         Node b = node(2L, "B", "10.0.0.2", 14000, 14010);
@@ -82,10 +93,6 @@ class NetworkOrchestrationSafetyTest {
         List<Map<String, Object>> actions = (List<Map<String, Object>>) plan.get("actions");
         assertEquals("CREATE_TUNNEL", actions.get(0).get("operation"));
         assertEquals("CREATE_FORWARD", actions.get(1).get("operation"));
-
-        // Compiler must only read JDBC state; no INSERT/UPDATE/DELETE is allowed here.
-        verify(jdbc, never()).update(anyString(), any(Object[].class));
-        verify(jdbc, never()).execute(anyString());
     }
 
     @Test
@@ -131,34 +138,37 @@ class NetworkOrchestrationSafetyTest {
 
     @Test
     void rollbackQueriesAndDeletesOnlyOwnedResources() {
-        JdbcTemplate jdbc = mock(JdbcTemplate.class);
-        NetworkPlanCompiler compiler = mock(NetworkPlanCompiler.class);
+        JdbcTemplate jdbc = new JdbcTemplate() {
+            @Override
+            public List<Map<String, Object>> queryForList(String sql, Object... args) {
+                if (sql.contains("FROM network_deployment WHERE id=?")) {
+                    return List.of(Map.of("id", 10L, "state", "ACTIVE"));
+                }
+                if (sql.contains("resource_type='FORWARD'")) {
+                    assertTrue(sql.contains("owned=1"), "rollback forward query must filter owned=1");
+                    return List.of(Map.of("resource_id", 20L));
+                }
+                if (sql.contains("resource_type='TUNNEL'")) {
+                    assertTrue(sql.contains("owned=1"), "rollback tunnel query must filter owned=1");
+                    // Synthetic deployment reused an existing Tunnel, so there is no owned Tunnel row.
+                    return List.of();
+                }
+                return List.of();
+            }
+
+            @Override
+            public int update(String sql, Object... args) {
+                return 1;
+            }
+        };
+
         TunnelService tunnelService = mock(TunnelService.class);
         ForwardService forwardService = mock(ForwardService.class);
 
         NetworkPlanApplyService service = new NetworkPlanApplyService();
         ReflectionTestUtils.setField(service, "jdbc", jdbc);
-        ReflectionTestUtils.setField(service, "compiler", compiler);
         ReflectionTestUtils.setField(service, "tunnelService", tunnelService);
         ReflectionTestUtils.setField(service, "forwardService", forwardService);
-
-        when(jdbc.queryForList(anyString(), any(Object[].class))).thenAnswer(invocation -> {
-            String sql = invocation.getArgument(0, String.class);
-            if (sql.contains("FROM network_deployment WHERE id=?")) {
-                return List.of(Map.of("id", 10L, "state", "ACTIVE"));
-            }
-            if (sql.contains("resource_type='FORWARD'")) {
-                assertTrue(sql.contains("owned=1"), "rollback forward query must filter owned=1");
-                return List.of(Map.of("resource_id", 20L));
-            }
-            if (sql.contains("resource_type='TUNNEL'")) {
-                assertTrue(sql.contains("owned=1"), "rollback tunnel query must filter owned=1");
-                // Synthetic deployment reused an existing Tunnel, so there is no owned Tunnel row.
-                return List.of();
-            }
-            return List.of();
-        });
-        when(jdbc.update(anyString(), any(Object[].class))).thenReturn(1);
 
         Forward forward = new Forward();
         forward.setId(20L);
