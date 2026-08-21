@@ -1,4 +1,4 @@
-name: Backend PR Check
+name: Network Orchestration PR Check
 
 on:
   push:
@@ -7,6 +7,7 @@ on:
   pull_request:
     paths:
       - 'springboot-backend/**'
+      - 'vite-frontend/**'
       - '.github/workflows/backend-pr-check.yml'
 
 permissions:
@@ -37,3 +38,27 @@ jobs:
       - name: Compile and package backend
         working-directory: springboot-backend
         run: mvn -B -DskipTests package
+
+  frontend-build:
+    name: TypeScript + Vite build (Node 20)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: vite-frontend/package.json
+
+      - name: Install frontend dependencies
+        working-directory: vite-frontend
+        run: npm install --no-audit --no-fund
+
+      - name: Build frontend
+        working-directory: vite-frontend
+        run: npm run build
