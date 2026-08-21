@@ -4,6 +4,7 @@ import com.admin.common.annotation.RequireRole;
 import com.admin.common.aop.LogAnnotation;
 import com.admin.common.lang.R;
 import com.admin.service.NetworkOrchestrationService;
+import com.admin.service.NetworkPlanApplyService;
 import com.admin.service.NetworkPlanCompiler;
 import org.springframework.web.bind.annotation.*;
 
@@ -20,6 +21,9 @@ public class NetworkOrchestrationController {
 
     @Resource
     private NetworkPlanCompiler networkPlanCompiler;
+
+    @Resource
+    private NetworkPlanApplyService networkPlanApplyService;
 
     @LogAnnotation
     @RequireRole
@@ -95,6 +99,31 @@ public class NetworkOrchestrationController {
         Object chainId = body.get("chainId");
         if (chainId == null) return R.err("chainId不能为空");
         return networkPlanCompiler.dryRun(Long.valueOf(chainId.toString()), body);
+    }
+
+    /**
+     * Apply is disabled by default even when this code is deployed.
+     * Requires TMS_NETWORK_APPLY_ENABLED=true, confirm=APPLY and exact fingerprint.
+     */
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/chain/apply")
+    public R applyChain(@RequestBody Map<String, Object> body) {
+        return networkPlanApplyService.apply(body);
+    }
+
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/deployment/list")
+    public R listDeployments() {
+        return networkPlanApplyService.listDeployments();
+    }
+
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/deployment/rollback")
+    public R rollbackDeployment(@RequestBody Map<String, Object> body) {
+        return networkPlanApplyService.rollback(body);
     }
 
     @LogAnnotation
