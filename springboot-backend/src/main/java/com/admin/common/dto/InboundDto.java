@@ -10,6 +10,9 @@ import javax.validation.constraints.NotNull;
 @Data
 public class InboundDto {
 
+    /** 编辑已有入站时使用 */
+    private Long id;
+
     @NotNull(message = "节点不能为空")
     private Long nodeId;
 
@@ -36,6 +39,18 @@ public class InboundDto {
 
     /** NB 7CM SS-over-SSH: SSH 私钥内容(OpenSSH PEM/openssh-key-v1) */
     private String sshPrivateKey;
+
+    /** NB 原生 Shadowsocks: NoBrand NAT 对外公布的 IP 或域名 */
+    private String publicServer;
+
+    /** NB 原生 Shadowsocks: NoBrand NAT 对外映射端口 */
+    private Integer publicPort;
+
+    /** NB 原生 Shadowsocks: 节点上 sing-box 的实际监听地址，默认 0.0.0.0 */
+    private String internalListenAddress;
+
+    /** NB 原生 Shadowsocks: 当前首版固定为 2022-blake3-aes-256-gcm */
+    private String cipher;
 
     private String remark;
 }

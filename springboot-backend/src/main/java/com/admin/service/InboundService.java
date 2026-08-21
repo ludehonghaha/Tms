@@ -17,6 +17,9 @@ public interface InboundService extends IService<Inbound> {
     /** 新建入站(节点生成 Reality 密钥 → 存 → 推 sing-box 配置) */
     R createInbound(InboundDto dto);
 
+    /** 编辑 NB 原生 Shadowsocks 的 NAT 公网端点及 sing-box 内部监听配置。 */
+    R updateInbound(InboundDto dto);
+
     /** 一键添加:在指定节点上把所有支持的协议一键全建出来。sni=Reality 借壳域名,空则默认 www.apple.com */
     R oneClickCreate(Long nodeId, String sni);
 
@@ -44,7 +47,7 @@ public interface InboundService extends IService<Inbound> {
     /** 按订阅 token 生成该用户所有协议链接的 base64 订阅内容(客户端订阅用) */
     String buildSubscription(String token);
 
-    /** NB 7CM SS-over-SSH: 生成 Mihomo/OpenClash 可直接使用的 YAML 订阅 */
+    /** NB SS-over-SSH 与 NB 原生 Shadowsocks 共用的 Mihomo/OpenClash YAML 订阅。 */
     String buildMihomoSubscription(String token);
 
     /** 取某用户的订阅 token(兼容旧接口;订阅现在按线路,推荐 getUserLines) */

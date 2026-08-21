@@ -12,6 +12,7 @@ import toast from "react-hot-toast";
 import {
   getInboundList,
   createInbound,
+  updateInbound,
   oneClickInbound,
   deleteInboundsByNode,
   assignAllToUser,
@@ -46,8 +47,15 @@ export default function InboundPage() {
     sshPort: 13500,
     sshUsername: "tunnel",
     sshPrivateKey: "",
+    publicServer: "",
+    publicPort: "",
+    internalListenAddress: "0.0.0.0",
+    listenPort: "",
   });
   const [createLoading, setCreateLoading] = useState(false);
+  const [nbEditOpen, setNbEditOpen] = useState(false);
+  const [nbEditLoading, setNbEditLoading] = useState(false);
+  const [nbEditForm, setNbEditForm] = useState<any>(null);
 
   const [oneClickOpen, setOneClickOpen] = useState(false);
   const [oneClickNodeId, setOneClickNodeId] = useState<number | null>(null);
@@ -111,12 +119,14 @@ export default function InboundPage() {
   }, []);
 
   const protoLabel = (p: string) =>
-    (({ vless: "VLESS-Reality", trojan: "Trojan-Reality", vmess: "VMess", shadowsocks: "Shadowsocks-2022", nb_ss_ssh: "NB 7CM - SS mux over SSH", hysteria2: "Hysteria2", tuic: "TUIC", anytls: "AnyTLS" } as any)[p] || p);
+    (({ vless: "VLESS-Reality", trojan: "Trojan-Reality", vmess: "VMess", shadowsocks: "Shadowsocks-2022", nb_ss: "NoBrand Shadowsocks (IPLC/NAT, 推荐)", nb_ss_ssh: "NoBrand SS over SSH (Mihomo/OpenClash 高级)", ss_tls_web: "Shadowsocks TLS/Web (公网)", hysteria2: "Hysteria2", tuic: "TUIC", anytls: "AnyTLS" } as any)[p] || p);
   const isReality = (p: string) => p === "vless" || p === "trojan";
+  const isNbSs = (p: string) => p === "nb_ss";
 
   const handleCreate = async () => {
     if (!createForm.nodeId) return toast.error("请选择节点");
     if (isReality(createForm.protocol) && !createForm.sni) return toast.error("Reality 协议需要填 SNI");
+    if (isNbSs(createForm.protocol) && (!createForm.publicServer || !createForm.publicPort)) return toast.error("请填写 NoBrand NAT 公网地址和映射端口");
     if (createForm.protocol === "nb_ss_ssh") {
       if (!createForm.sshPort) return toast.error("NB 7CM 需要填写 SSH 端口");
       if (!createForm.sshUsername) return toast.error("NB 7CM 需要填写 SSH 用户名");
@@ -138,6 +148,13 @@ export default function InboundPage() {
         payload.sshUsername = createForm.sshUsername;
         payload.sshPrivateKey = createForm.sshPrivateKey;
       }
+      if (isNbSs(createForm.protocol)) {
+        payload.publicServer = createForm.publicServer;
+        payload.publicPort = Number(createForm.publicPort);
+        payload.internalListenAddress = createForm.internalListenAddress || "0.0.0.0";
+        payload.listenPort = createForm.listenPort ? Number(createForm.listenPort) : undefined;
+        payload.cipher = "2022-blake3-aes-256-gcm";
+      }
       const res = await createInbound(payload);
       if (res.code === 0) {
         toast.success("入站已创建");
@@ -150,6 +167,21 @@ export default function InboundPage() {
       toast.error("创建失败");
     }
     setCreateLoading(false);
+  };
+
+  const openNbEdit = (ib: any) => {
+    let cfg: any = {}; try { cfg = JSON.parse(ib.configJson || "{}"); } catch { /* ignored */ }
+    setNbEditForm({ id: ib.id, publicServer: cfg.publicServer || "", publicPort: cfg.publicPort || "", internalListenAddress: cfg.internalListenAddress || "0.0.0.0", listenPort: ib.listenPort || "", cipher: cfg.method || "2022-blake3-aes-256-gcm" });
+    setNbEditOpen(true);
+  };
+  const handleNbEdit = async () => {
+    if (!nbEditForm?.publicServer || !nbEditForm?.publicPort || !nbEditForm?.listenPort) return toast.error("请填完整 NAT 和内部监听信息");
+    setNbEditLoading(true);
+    try {
+      const res = await updateInbound({ ...nbEditForm, publicPort: Number(nbEditForm.publicPort), listenPort: Number(nbEditForm.listenPort) });
+      if (res.code === 0) { toast.success("NB Shadowsocks 已更新并下发"); setNbEditOpen(false); loadAll(); } else toast.error(res.msg || "更新失败");
+    } catch { toast.error("更新失败"); }
+    setNbEditLoading(false);
   };
 
   const handleOneClick = async () => {
@@ -248,6 +280,10 @@ export default function InboundPage() {
                 sshPort: 13500,
                 sshUsername: "tunnel",
                 sshPrivateKey: "",
+                publicServer: "",
+                publicPort: "",
+                internalListenAddress: "0.0.0.0",
+                listenPort: "",
               });
               setCreateOpen(true);
             }}
@@ -277,6 +313,7 @@ export default function InboundPage() {
                     <Chip key={ib.id} size="sm" variant="flat" color="secondary">{protoLabel(ib.protocol)}</Chip>
                   ))}
                 </div>
+                {nodeInbounds.filter((ib) => ib.protocol === "nb_ss").map((ib) => <Button key={`edit-${ib.id}`} size="sm" variant="flat" color="warning" onPress={() => openNbEdit(ib)}>编辑 NB SS NAT</Button>)}
                 <div className="text-xs text-default-400">
                   整机一条订阅:分配给车友后,一条订阅链接导入客户端即拿到上面全部协议,以后加新协议自动更新。
                 </div>
@@ -453,6 +490,8 @@ export default function InboundPage() {
                   ? "VMess:TCP 无 TLS,无域名,兼容各种老客户端"
                   : createForm.protocol === "nb_ss_ssh"
                   ? "NB 7CM 移动入口专用：公网只走 SSH；SS-2022 与 GOST 仅监听远端回环地址，Mihomo/OpenClash 用 dialer-proxy + smux。不要用于普通 VPS。"
+                  : isNbSs(createForm.protocol)
+                  ? "NoBrand IPLC/NAT 原生 Shadowsocks：只 TCP、无 TLS/SSH/GOST；请先确认 NAT 映射已由 NoBrand 配置"
                   : ["hysteria2", "tuic", "anytls"].includes(createForm.protocol)
                   ? "自签证书(无域名);客户端需勾选\"允许不安全/insecure\"。Hy2/TUIC 是 QUIC,快"
                   : "Shadowsocks-2022:无 TLS、配置简单，适合小火箭 / Mihomo 系客户端"
@@ -463,6 +502,7 @@ export default function InboundPage() {
               <SelectItem key="vmess">VMess(无域名,兼容老客户端)</SelectItem>
               <SelectItem key="shadowsocks">Shadowsocks-2022(普通 VPS)</SelectItem>
               <SelectItem key="nb_ss_ssh">NB 7CM - SS mux over SSH(移动入口专用)</SelectItem>
+              <SelectItem key="nb_ss">NoBrand Shadowsocks(IPLC/NAT, 推荐)</SelectItem>
               <SelectItem key="hysteria2">Hysteria2(QUIC,快,自签证书)</SelectItem>
               <SelectItem key="tuic">TUIC(QUIC,自签证书)</SelectItem>
               <SelectItem key="anytls">AnyTLS(自签证书)</SelectItem>
@@ -501,6 +541,16 @@ export default function InboundPage() {
                 />
               </>
             )}
+            {isNbSs(createForm.protocol) && (
+              <>
+                <div className="text-xs text-warning-600">共享入站凭证：不支持个人限速、流量、到期或撤销；NAT 映射必须由 NoBrand 先行配置。</div>
+                <Input label="NoBrand NAT 公网 IP / 域名" value={createForm.publicServer} onChange={(e) => setCreateForm({ ...createForm, publicServer: e.target.value })} />
+                <Input type="number" label="NoBrand NAT 公网映射端口" value={createForm.publicPort} onChange={(e) => setCreateForm({ ...createForm, publicPort: e.target.value })} />
+                <Input label="sing-box 内部监听地址" value={createForm.internalListenAddress} onChange={(e) => setCreateForm({ ...createForm, internalListenAddress: e.target.value })} />
+                <Input type="number" label="sing-box 内部监听端口" value={createForm.listenPort} onChange={(e) => setCreateForm({ ...createForm, listenPort: e.target.value })} description="可留空自动分配；不等同 NAT 公网端口" />
+                <Input isReadOnly label="Cipher" value="2022-blake3-aes-256-gcm" />
+              </>
+            )}
             {isReality(createForm.protocol) && (
               <>
                 <Autocomplete
@@ -533,6 +583,14 @@ export default function InboundPage() {
           </ModalFooter>
         </ModalContent>
       </Modal>
+
+      <Modal isOpen={nbEditOpen} onClose={() => setNbEditOpen(false)}><ModalContent><ModalHeader>编辑 NoBrand Shadowsocks NAT</ModalHeader><ModalBody className="space-y-3">
+        <Input label="NAT 公网 IP / 域名" value={nbEditForm?.publicServer || ""} onChange={(e) => setNbEditForm({ ...nbEditForm, publicServer: e.target.value })} />
+        <Input type="number" label="NAT 公网映射端口" value={String(nbEditForm?.publicPort || "")} onChange={(e) => setNbEditForm({ ...nbEditForm, publicPort: e.target.value })} />
+        <Input label="sing-box 内部监听地址" value={nbEditForm?.internalListenAddress || ""} onChange={(e) => setNbEditForm({ ...nbEditForm, internalListenAddress: e.target.value })} />
+        <Input type="number" label="sing-box 内部监听端口" value={String(nbEditForm?.listenPort || "")} onChange={(e) => setNbEditForm({ ...nbEditForm, listenPort: e.target.value })} />
+        <Input isReadOnly label="Cipher" value="2022-blake3-aes-256-gcm" />
+      </ModalBody><ModalFooter><Button variant="light" onPress={() => setNbEditOpen(false)}>取消</Button><Button color="primary" isLoading={nbEditLoading} onPress={handleNbEdit}>保存并下发</Button></ModalFooter></ModalContent></Modal>
     </div>
   );
 }

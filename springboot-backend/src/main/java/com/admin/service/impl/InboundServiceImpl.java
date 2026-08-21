@@ -49,6 +49,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
     private static final int TUNNEL_TYPE_PORT_FORWARD = 1;
     private static final int SINGBOX_LISTEN_BASE = 40000;
+    private static final String NB_SS_METHOD = "2022-blake3-aes-256-gcm";
 
     @Autowired
     private InboundUserMapper inboundUserMapper;
@@ -86,6 +87,30 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             return push;
         }
         return R.ok(created);
+    }
+
+    @Override
+    public R updateInbound(InboundDto dto) {
+        if (dto.getId() == null) return R.err("入站ID不能为空");
+        Inbound inbound = this.getById(dto.getId());
+        if (inbound == null) return R.err("入站不存在");
+        if (!isNbSs(inbound.getProtocol())) return R.err("当前只允许编辑 NB 原生 Shadowsocks");
+        String oldConfig = inbound.getConfigJson();
+        Integer oldPort = inbound.getListenPort();
+        String oldTag = inbound.getTag();
+        Long oldUpdated = inbound.getUpdatedTime();
+        R validation = applyNbSsConfig(inbound, dto, false);
+        if (validation.getCode() != 0) return validation;
+        inbound.setUpdatedTime(System.currentTimeMillis());
+        if (!this.updateById(inbound)) return R.err("入站保存失败");
+        R pushed = pushNodeSingbox(inbound.getNodeId());
+        if (pushed.getCode() == 0) return R.ok(inbound);
+        inbound.setConfigJson(oldConfig);
+        inbound.setListenPort(oldPort);
+        inbound.setTag(oldTag);
+        inbound.setUpdatedTime(oldUpdated);
+        this.updateById(inbound);
+        return pushed;
     }
 
     /**
@@ -134,6 +159,10 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 cfg.put("sshPrivateKey", dto.getSshPrivateKey().trim());
             }
             in.setConfigJson(cfg.toJSONString());
+        } else if (isNbSs(protocol)) {
+            in.setSecurity("none");
+            R validation = applyNbSsConfig(in, dto, true);
+            if (validation.getCode() != 0) return validation;
         } else if ("vmess".equals(protocol)) {
             // VMess(TCP,无 TLS,无域名):无需密钥,用户 assign 时发 uuid
             in.setSecurity("none");
@@ -176,6 +205,34 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         }
         return R.ok(in);
     }
+
+    private R applyNbSsConfig(Inbound in, InboundDto dto, boolean creating) {
+        String publicServer = trimToNull(dto.getPublicServer());
+        if (publicServer == null || publicServer.length() > 255 || publicServer.contains("://") || publicServer.contains("/")) {
+            return R.err("NB SS 需要填写有效 NAT 公网 IP 或域名");
+        }
+        if (!validPort(dto.getPublicPort())) return R.err("NB SS 需要填写有效 NAT 公网端口");
+        String listen = trimToNull(dto.getInternalListenAddress());
+        if (listen == null) listen = "0.0.0.0";
+        if ("127.0.0.1".equals(listen) || "::1".equals(listen)) return R.err("NB SS 内部监听不能使用 loopback 地址");
+        if (dto.getListenPort() != null && !validPort(dto.getListenPort())) return R.err("NB SS 内部监听端口无效");
+        String cipher = trimToNull(dto.getCipher());
+        if (cipher != null && !NB_SS_METHOD.equals(cipher)) return R.err("NB SS 首版仅支持 " + NB_SS_METHOD);
+        JSONObject cfg = JSON.parseObject(in.getConfigJson() == null ? "{}" : in.getConfigJson());
+        cfg.put("method", NB_SS_METHOD);
+        if (creating || trimToNull(cfg.getString("password")) == null) cfg.put("password", genSsKey());
+        cfg.put("publicServer", publicServer);
+        cfg.put("publicPort", dto.getPublicPort());
+        cfg.put("internalListenAddress", listen);
+        cfg.put("udpEnabled", false);
+        in.setListenPort(dto.getListenPort() != null ? dto.getListenPort() : allocateListenPort(in.getNodeId()));
+        in.setTag("in-" + in.getNodeId() + "-" + in.getListenPort());
+        in.setConfigJson(cfg.toJSONString());
+        return R.ok();
+    }
+
+    private static boolean validPort(Integer port) { return port != null && port > 0 && port <= 65535; }
+    private static String trimToNull(String value) { return value == null || value.trim().isEmpty() ? null : value.trim(); }
 
     /** 借壳域名默认值:apple 实测最稳,别换成 www.microsoft.com(上了后量子,Reality 握不上手) */
     private static final String DEFAULT_REALITY_SNI = "www.apple.com";
@@ -342,6 +399,10 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             return R.err("节点不存在");
         }
 
+        if (isNbSs(in.getProtocol())) {
+            return assignNbSsShared(in, user, dto);
+        }
+
         // 0. 查重:已给这个用户分过这个协议 → 直接返回现有链接 + 订阅,不重复建(避免重复占端口/转发)
         InboundUser existed = inboundUserMapper.selectOne(new QueryWrapper<InboundUser>()
                 .eq("inbound_id", in.getId()).eq("user_id", user.getId()).last("limit 1"));
@@ -458,6 +519,10 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         List<Inbound> inbounds = this.list(qw);
         if (inbounds.isEmpty()) {
             return R.err(relay ? "这条中转还没有协议" : "这台机器还没有直连协议,先去「一键添加」");
+        }
+        if (inbounds.stream().anyMatch(in -> isNbSs(in.getProtocol()))
+                && (dto.getSpeedId() != null || dto.getFlow() != null || dto.getExpTime() != null)) {
+            return R.err("该机器包含 NB 原生 Shadowsocks；共享凭证不支持个人限速、流量或到期，请留空后再分配");
         }
         // 订阅按【线路】= 车友 × 机器 × 落地组:一组共享一条订阅 token;车友可有很多条线路
         java.util.Map<Long, String> lineTokens = new java.util.HashMap<>();
@@ -576,6 +641,17 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
     /** 给某用户在某入站上建凭证+转发,但不推 sing-box(批量分配时最后统一推)。limiterName=车友专属限速器名(调用方已推好) */
     private R assignOneNoPush(Inbound in, Node node, User user, Integer limiterName, Long expTime, String subToken) {
+        if (isNbSs(in.getProtocol())) {
+            InboundUser iu = new InboundUser();
+            iu.setInboundId(in.getId());
+            iu.setUserId(user.getId());
+            iu.setPassword(nbSsPassword(in));
+            iu.setSubToken(subToken);
+            iu.setStatus(1);
+            iu.setCreatedTime(System.currentTimeMillis());
+            inboundUserMapper.insert(iu);
+            return R.ok(iu);
+        }
         Tunnel tunnel = isNbSsSsh(in.getProtocol())
                 ? ensureNbLoopbackTunnel(node.getId())
                 : ensurePortForwardTunnel(node.getId());
@@ -618,6 +694,11 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
     /** 按协议为某个入站用户拼客户端链接(assignUser 与订阅共用) */
     private String buildClientLink(Inbound in, InboundUser iu, Node node, Forward forward) {
         String remark = (in.getRemark() != null && !in.getRemark().isEmpty()) ? in.getRemark() : in.getTag();
+        if (isNbSs(in.getProtocol())) {
+            JSONObject cfg = JSON.parseObject(in.getConfigJson() == null ? "{}" : in.getConfigJson());
+            return SingboxUtil.buildShadowsocksLink(cfg.getString("publicServer"), cfg.getInteger("publicPort"),
+                    cfg.getString("method"), cfg.getString("password"), remark);
+        }
         String uuid = iu.getUuid();
         String password = iu.getPassword();
         // 转发机配了域名就用域名 —— 车友在客户端里看到的是 hk.example.com 而不是车主的 IP
@@ -665,12 +746,12 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 continue;
             }
             Inbound in = this.getById(iu.getInboundId());
-            if (in == null || iu.getGostForwardId() == null) {
+            if (in == null) {
                 continue;
             }
             Node node = nodeMapper.selectById(in.getNodeId());
-            Forward forward = forwardMapper.selectById(iu.getGostForwardId());
-            if (node == null || forward == null) {
+            Forward forward = iu.getGostForwardId() == null ? null : forwardMapper.selectById(iu.getGostForwardId());
+            if (node == null || (!isNbSs(in.getProtocol()) && forward == null)) {
                 continue;
             }
             String link = buildClientLink(in, iu, node, forward);
@@ -680,6 +761,35 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         }
         String joined = String.join("\n", links);
         return java.util.Base64.getEncoder().encodeToString(joined.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    private R assignNbSsShared(Inbound in, User user, InboundUserDto dto) {
+        if (dto.getSpeedId() != null || dto.getFlow() != null || dto.getExpTime() != null) {
+            return R.err("NB 原生 Shadowsocks 为共享凭证，不支持个人限速、流量或到期");
+        }
+        InboundUser existed = inboundUserMapper.selectOne(new QueryWrapper<InboundUser>()
+                .eq("inbound_id", in.getId()).eq("user_id", user.getId()).last("limit 1"));
+        String subToken = getOrCreateLineSubToken(user.getId(), in.getNodeId(), in.getLandingId());
+        if (existed == null) {
+            existed = new InboundUser();
+            existed.setInboundId(in.getId());
+            existed.setUserId(user.getId());
+            existed.setPassword(nbSsPassword(in));
+            existed.setSubToken(subToken);
+            existed.setStatus(1);
+            existed.setCreatedTime(System.currentTimeMillis());
+            inboundUserMapper.insert(existed);
+        }
+        JSONObject result = new JSONObject();
+        result.put("inboundUserId", existed.getId());
+        result.put("link", buildClientLink(in, existed, null, null));
+        result.put("subToken", subToken);
+        result.put("sharedCredential", true);
+        return R.ok(result);
+    }
+
+    private String nbSsPassword(Inbound inbound) {
+        return JSON.parseObject(inbound.getConfigJson() == null ? "{}" : inbound.getConfigJson()).getString("password");
     }
 
     @Override
@@ -748,6 +858,17 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             y.append("      enabled: true\n");
             y.append("      protocol: smux\n");
             y.append("      only-tcp: true\n");
+        }
+        // NB 原生 SS 与 nb_ss_ssh 共用该订阅端点，但只输出标准 ss proxy 字段。
+        for (InboundUser iu : ius) {
+            if (iu.getStatus() != null && iu.getStatus() == 0) continue;
+            Inbound in = this.getById(iu.getInboundId());
+            if (in == null || !isNbSs(in.getProtocol())) continue;
+            JSONObject cfg = JSON.parseObject(in.getConfigJson() == null ? "{}" : in.getConfigJson());
+            String name = trimToNull(in.getRemark());
+            if (name == null) name = in.getTag();
+            y.append(SingboxUtil.buildMihomoShadowsocksProxy(name, cfg.getString("publicServer"),
+                    cfg.getInteger("publicPort"), cfg.getString("method"), cfg.getString("password")));
         }
         return y.toString();
     }
@@ -1189,6 +1310,10 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
     private boolean isNbSsSsh(String protocol) {
         return "nb_ss_ssh".equalsIgnoreCase(protocol);
+    }
+
+    private boolean isNbSs(String protocol) {
+        return "nb_ss".equalsIgnoreCase(protocol);
     }
 
     private boolean isShadowsocksFamily(String protocol) {
