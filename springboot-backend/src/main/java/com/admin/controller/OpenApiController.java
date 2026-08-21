@@ -30,6 +30,12 @@ public class OpenApiController extends BaseController {
         return inboundService.buildSubscription(token);
     }
 
+    /** NB SS-over-SSH 与原生 Shadowsocks 的 Mihomo / OpenClash / Clash Meta YAML。 */
+    @GetMapping(value = "/sub/mihomo", produces = "text/yaml;charset=UTF-8")
+    public String mihomoSub(@RequestParam("token") String token) {
+        return inboundService.buildMihomoSubscription(token);
+    }
+
     @LogAnnotation
     @GetMapping("/sub_store")
     public Object create(

@@ -6,6 +6,7 @@ import com.admin.common.utils.JwtUtil;
 import com.alibaba.fastjson.JSON;
 import com.admin.common.utils.HttpContextUtils;
 import com.admin.common.utils.IpUtils;
+import com.admin.common.dto.InboundDto;
 import lombok.extern.slf4j.Slf4j;
 import org.aspectj.lang.JoinPoint;
 import org.aspectj.lang.annotation.*;
@@ -71,10 +72,10 @@ public class LogAspect {
         
 
         // 获取请求参数
-        String requestParams = getRequestParams(joinPoint);
+        String requestParams = safeRequestSummary(joinPoint);
         
         // 获取返回参数
-        String responseParams = returnValue != null ? JSON.toJSONString(returnValue) : "无返回值";
+        String responseParams = returnValue != null ? returnValue.getClass().getSimpleName() : "无返回值";
         
         // 合并为一条完整的日志信息
         String logMessage = String.format(
@@ -126,7 +127,7 @@ public class LogAspect {
 
             
             // 获取请求参数
-            String requestParams = getRequestParams(joinPoint);
+        String requestParams = safeRequestSummary(joinPoint);
             
             // 获取异常信息
             String exceptionMsg = ex != null ? ex.getMessage() : "未知异常";
@@ -189,5 +190,24 @@ public class LogAspect {
         } catch (Exception e) {
             return "获取参数失败: " + e.getMessage();
         }
+    }
+
+    /**
+     * Audit logs must never serialize DTOs or response bodies: those objects may carry
+     * passwords, private keys, subscription tokens, or configJson.  Keep only the
+     * operational fields needed to trace an inbound request.
+     */
+    private String safeRequestSummary(JoinPoint joinPoint) {
+        Object[] args = joinPoint.getArgs();
+        if (args.length == 0) return "无参数";
+        if (args.length == 1 && args[0] instanceof InboundDto) {
+            InboundDto dto = (InboundDto) args[0];
+            return String.format("InboundDto{id=%s,nodeId=%s,protocol=%s,listenPort=%s,publicServer=%s,publicPort=%s,internalListenAddress=%s}",
+                    dto.getId(), dto.getNodeId(), dto.getProtocol(), dto.getListenPort(),
+                    dto.getPublicServer(), dto.getPublicPort(), dto.getInternalListenAddress());
+        }
+        return Arrays.stream(args)
+                .map(arg -> arg == null ? "null" : arg.getClass().getSimpleName())
+                .collect(java.util.stream.Collectors.joining(",", "types=[", "]"));
     }
 }
