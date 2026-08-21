@@ -6,6 +6,7 @@ import com.admin.common.lang.R;
 import com.admin.service.NetworkOrchestrationService;
 import com.admin.service.NetworkPlanApplyService;
 import com.admin.service.NetworkPlanCompiler;
+import com.admin.service.NetworkPreflightService;
 import org.springframework.web.bind.annotation.*;
 
 import javax.annotation.Resource;
@@ -21,6 +22,9 @@ public class NetworkOrchestrationController {
 
     @Resource
     private NetworkPlanCompiler networkPlanCompiler;
+
+    @Resource
+    private NetworkPreflightService networkPreflightService;
 
     @Resource
     private NetworkPlanApplyService networkPlanApplyService;
@@ -99,6 +103,19 @@ public class NetworkOrchestrationController {
         Object chainId = body.get("chainId");
         if (chainId == null) return R.err("chainId不能为空");
         return networkPlanCompiler.dryRun(Long.valueOf(chainId.toString()), body);
+    }
+
+    /**
+     * Read-only runtime preflight using the existing Agent TcpPing command.
+     * It checks planned local TCP ports and final target reachability.
+     */
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/chain/preflight")
+    public R preflightChain(@RequestBody Map<String, Object> body) {
+        Object chainId = body.get("chainId");
+        if (chainId == null) return R.err("chainId不能为空");
+        return networkPreflightService.preflight(Long.valueOf(chainId.toString()), body);
     }
 
     /**
