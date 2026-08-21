@@ -1,0 +1,35 @@
+name: Backend PR Check
+
+on:
+  push:
+    branches:
+      - codex/feature-network-orchestration
+  pull_request:
+    paths:
+      - 'springboot-backend/**'
+      - '.github/workflows/backend-pr-check.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  backend-build:
+    name: Maven package (Java 21)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: springboot-backend/pom.xml
+
+      - name: Compile and package backend
+        working-directory: springboot-backend
+        run: mvn -B -DskipTests package
