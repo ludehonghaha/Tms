@@ -16,6 +16,7 @@ import {
   NetworkChainRequest,
   preflightNetworkChain,
 } from '@/api/network-orchestration';
+import NetworkGrayChainBuilder from '@/components/network-gray-chain-builder';
 
 type AnyMap = Record<string, any>;
 
@@ -83,6 +84,7 @@ export default function NetworkOrchestrationPage() {
   const [chains, setChains] = useState<ChainRow[]>([]);
   const [groups, setGroups] = useState<GroupRow[]>([]);
   const [deployments, setDeployments] = useState<AnyMap[]>([]);
+  const [applyEnabled, setApplyEnabled] = useState(false);
   const [selectedChainId, setSelectedChainId] = useState<string>('');
   const [targetHost, setTargetHost] = useState('127.0.0.1');
   const [targetPort, setTargetPort] = useState('8388');
@@ -117,7 +119,14 @@ export default function NetworkOrchestrationPage() {
       }
 
       if (deploymentRes.code === 0) {
-        setDeployments(Array.isArray(deploymentRes.data) ? deploymentRes.data : []);
+        const payload = deploymentRes.data as AnyMap | AnyMap[] | undefined;
+        if (Array.isArray(payload)) {
+          setDeployments(payload);
+          setApplyEnabled(false);
+        } else {
+          setDeployments(Array.isArray(payload?.deployments) ? payload.deployments : []);
+          setApplyEnabled(payload?.applyEnabled === true);
+        }
       }
     } catch (error) {
       console.error(error);
@@ -130,6 +139,13 @@ export default function NetworkOrchestrationPage() {
   useEffect(() => {
     loadData();
   }, []);
+
+  const handleGrayChainCreated = async (chainId?: number) => {
+    await loadData();
+    if (chainId) setSelectedChainId(String(chainId));
+    setDryResult(null);
+    setPreflightResult(null);
+  };
 
   const buildRequest = (): NetworkChainRequest | null => {
     const chainId = Number(selectedChainId);
@@ -221,17 +237,22 @@ export default function NetworkOrchestrationPage() {
           <h1 className="text-2xl font-semibold">网络编排（灰度）</h1>
           <Chip color="warning" variant="flat">只读优先</Chip>
           <Chip color="primary" variant="flat">ForwardX 风格</Chip>
+          <Chip color={applyEnabled ? 'danger' : 'success'} variant="flat">
+            Apply {applyEnabled ? '已启用' : '默认关闭'}
+          </Chip>
         </div>
         <p className="text-sm text-default-500">
-          当前页面只提供链路解析、Dry-run、Preflight 和部署记录查看。这里没有 Apply 按钮，避免误改生产链路。
+          当前页面提供灰度 Chain 建模、链路解析、Dry-run、Preflight 和部署记录查看。这里没有 Apply 按钮，避免误改生产链路。
         </p>
       </div>
 
       <Alert
         color="warning"
         title="安全边界"
-        description="Dry-run 不写数据库、不修改 Agent；Preflight 只调用现有 TcpPing。真正 Apply 仍需服务端显式开启 TMS_NETWORK_APPLY_ENABLED=true，并提供最新 fingerprint。"
+        description="创建灰度 Chain 只写隔离的编排模型。Dry-run 不写 Tunnel/Forward、不修改 Agent；Preflight 只调用现有 TcpPing。真正 Apply 仍需服务端显式开启 TMS_NETWORK_APPLY_ENABLED=true，并提供最新 fingerprint。"
       />
+
+      <NetworkGrayChainBuilder onCreated={handleGrayChainCreated} />
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
         <Card className="xl:col-span-2">
