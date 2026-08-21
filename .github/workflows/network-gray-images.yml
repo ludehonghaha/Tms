@@ -21,7 +21,10 @@ concurrency:
 jobs:
   build-gray-images:
     name: Build amd64 gray images
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.ref == 'codex/feature-network-orchestration'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.head.ref == 'codex/feature-network-orchestration' ||
+      github.event.pull_request.head.ref == 'codex/feature-network-orchestration-production-gray-runtime'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
