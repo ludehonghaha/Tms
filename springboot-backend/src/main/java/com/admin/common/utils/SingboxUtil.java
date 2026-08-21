@@ -127,7 +127,7 @@ public class SingboxUtil {
                 // SS-2022 = 一个逻辑 inbound 按车友展开成多个专属 loopback inbound，
                 // 从而让每条 GOST 公网转发只能命中该车友自己的 SS 密钥。
                 JSONArray activeTags = new JSONArray();
-                if ("shadowsocks".equalsIgnoreCase(in.getProtocol())) {
+                if (isShadowsocksFamily(in.getProtocol())) {
                     JSONArray ssInbounds = buildShadowsocksUserInbounds(in, users);
                     for (Object item : ssInbounds) {
                         JSONObject ssInbound = (JSONObject) item;
@@ -191,8 +191,11 @@ public class SingboxUtil {
             case "vmess":
                 return buildVmess(in, users);
             case "shadowsocks":
-                // SS 需要按车友展开多个独立 loopback inbound，由 buildNodeConfig 专门处理。
+            case "nb_ss_ssh":
+                // SS / NB SS-over-SSH 都按车友展开多个独立 loopback inbound，由 buildNodeConfig 专门处理。
                 return null;
+            case "nb_ss":
+                return buildNbShadowsocks(in);
             case "hysteria2":
                 return buildHysteria2(in, users);
             case "tuic":
@@ -236,6 +239,13 @@ public class SingboxUtil {
             inbound.put("method", method);
             inbound.put("password", u.getPassword());
 
+            // NB 7CM: SS 位于 SSH 隧道内，开启 sing-box inbound MUX 与 Mihomo smux 对接。
+            if ("nb_ss_ssh".equalsIgnoreCase(in.getProtocol())) {
+                JSONObject multiplex = new JSONObject();
+                multiplex.put("enabled", true);
+                inbound.put("multiplex", multiplex);
+            }
+
             result.add(inbound);
         }
 
@@ -259,11 +269,45 @@ public class SingboxUtil {
         return "127." + a + "." + b + "." + c;
     }
 
+    private static boolean isShadowsocksFamily(String protocol) {
+        return "shadowsocks".equalsIgnoreCase(protocol) || "nb_ss_ssh".equalsIgnoreCase(protocol);
+    }
+
+    /** NoBrand NAT 原生 Shadowsocks：公网 NAT 直接映射到此 socket，不能走 gost/loopback。 */
+    private static JSONObject buildNbShadowsocks(Inbound in) {
+        JSONObject cfg = parseConfig(in.getConfigJson());
+        JSONObject inbound = new JSONObject();
+        inbound.put("type", "shadowsocks");
+        inbound.put("tag", in.getTag());
+        inbound.put("listen", cfg.getString("internalListenAddress"));
+        inbound.put("listen_port", in.getListenPort());
+        inbound.put("network", "tcp");
+        inbound.put("method", cfg.getString("method"));
+        inbound.put("password", cfg.getString("password"));
+        return inbound;
+    }
+
     /** 生成 Shadowsocks 客户端分享链接(SIP002:ss://base64url(method:password)@ip:port#remark)。地址=gost 公网口 */
     public static String buildShadowsocksLink(String serverIp, Integer port, String method, String password, String remark) {
         String userinfo = Base64.getUrlEncoder().withoutPadding()
                 .encodeToString((method + ":" + password).getBytes(StandardCharsets.UTF_8));
         return "ss://" + userinfo + "@" + serverIp + ":" + port + "#" + urlEncode(remark);
+    }
+
+    /** 标准 Mihomo SS proxy block；不携带 SSH、plugin 或私有传输字段。 */
+    public static String buildMihomoShadowsocksProxy(String name, String server, Integer port,
+                                                      String method, String password) {
+        return "  - name: " + yamlQuote(name) + "\n"
+                + "    type: ss\n"
+                + "    server: " + yamlQuote(server) + "\n"
+                + "    port: " + port + "\n"
+                + "    cipher: " + yamlQuote(method) + "\n"
+                + "    password: " + yamlQuote(password) + "\n"
+                + "    udp: false\n";
+    }
+
+    private static String yamlQuote(String value) {
+        return JSON.toJSONString(value == null ? "" : value);
     }
 
     private static JSONObject parseConfig(String configJson) {
