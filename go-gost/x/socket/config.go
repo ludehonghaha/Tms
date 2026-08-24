@@ -51,12 +51,22 @@ func saveConfig() error {
 		return fmt.Errorf("关闭 Runtime 临时配置失败: %w", err)
 	}
 
-	// 先保留上一版。备份失败不覆盖现有 gost.json，避免在没有回滚点时继续下发。
-	if old, err := os.ReadFile(file); err == nil && len(old) > 0 {
-		if err := writeAtomic(filepath.Join(dir, base+".bak"), old, 0600); err != nil {
-			_ = os.Remove(tmpName)
-			return fmt.Errorf("备份上一版 Runtime 配置失败: %w", err)
+	// 先保留上一版。只有首次落盘（文件不存在）允许没有备份；如果旧文件存在但读不出来，
+	// 直接拒绝覆盖，避免在没有可验证回滚源的情况下继续下发。
+	old, readErr := os.ReadFile(file)
+	switch {
+	case readErr == nil:
+		if len(old) > 0 {
+			if err := writeAtomic(filepath.Join(dir, base+".bak"), old, 0600); err != nil {
+				_ = os.Remove(tmpName)
+				return fmt.Errorf("备份上一版 Runtime 配置失败: %w", err)
+			}
 		}
+	case os.IsNotExist(readErr):
+		// 首次启动还没有 gost.json，直接写第一版。
+	default:
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("读取上一版 Runtime 配置失败，拒绝覆盖: %w", readErr)
 	}
 
 	if err := os.Rename(tmpName, file); err != nil {
