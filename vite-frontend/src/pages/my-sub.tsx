@@ -19,7 +19,8 @@ export default function MySubPage() {
   const [masterSubToken, setMasterSubToken] = useState("");
   const [loading, setLoading] = useState(true);
 
-  const subUrl = (token: string) => `${window.location.origin}/api/v1/open_api/sub?token=${token}`;
+  const subUrl = (token: string, format: string = "uri") =>
+    `${window.location.origin}/api/v1/open_api/${format === "mihomo" ? "sub/mihomo" : "sub"}?token=${token}`;
 
   const load = async () => {
     try {
@@ -103,7 +104,7 @@ export default function MySubPage() {
       ) : (
         <div className="space-y-3">
           {lines.map((ln: any, idx: number) => {
-            const url = subUrl(ln.subToken);
+            const url = subUrl(ln.subToken, ln.subFormat);
             const isRelay = ln.type === "relay";
             const used = ln.flow || 0;
             const quota = ln.quotaGb > 0 ? ln.quotaGb * GB : 0;

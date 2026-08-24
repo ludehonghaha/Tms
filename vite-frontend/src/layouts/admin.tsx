@@ -122,6 +122,17 @@ export default function AdminLayout({
       adminOnly: true
     },
     {
+      path: '/network',
+      label: '网络编排',
+      icon: (
+        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M5 3a2 2 0 100 4 2 2 0 000-4zM15 3a2 2 0 100 4 2 2 0 000-4zM10 13a2 2 0 100 4 2 2 0 000-4z" />
+          <path fillRule="evenodd" d="M6.78 6.625a1 1 0 011.345-.405L10 7.233l1.875-1.013a1 1 0 11.95 1.76L11 8.966V13a1 1 0 11-2 0V8.966L7.185 7.98a1 1 0 01-.405-1.355z" clipRule="evenodd" />
+        </svg>
+      ),
+      adminOnly: true
+    },
+    {
       path: '/tunnel',
       label: '隧道管理',
       icon: (
@@ -190,10 +201,11 @@ export default function AdminLayout({
     '/node',        // 1 转发机
     '/inbound',     // 2 协议管理
     '/relay',       // 3 中转
-    '/user',        // 4 用户
-    '/limit',       // 5 限速
-    '/tunnel',      // 6 隧道
-    '/forward',     // 7 转发
+    '/network',     // 4 网络编排
+    '/user',        // 5 用户
+    '/limit',       // 6 限速
+    '/tunnel',      // 7 隧道
+    '/forward',     // 8 转发
     '/config',
     '/guide',
   ];

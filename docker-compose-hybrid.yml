@@ -50,6 +50,7 @@ services:
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
       JWT_SECRET: ${JWT_SECRET}
+      TMS_NETWORK_APPLY_ENABLED: ${TMS_NETWORK_APPLY_ENABLED:-false}
       LOG_DIR: /app/logs
       JAVA_OPTS: "-Xms256m -Xmx512m -Dfile.encoding=UTF-8 -Duser.timezone=Asia/Shanghai"
     ports:
@@ -96,3 +97,4 @@ networks:
 # JWT_SECRET=换一串随机长字符串
 # BACKEND_PORT=6365
 # FRONTEND_PORT=6366
+# TMS_NETWORK_APPLY_ENABLED=false
