@@ -72,16 +72,21 @@ public class StatisticsFlowAsync {
     /**
      * 手动流量重置前调用：立即把这个用户从上次采样到现在的差额落桶。
      * 这样管理员在任意秒点击 reset 都不会丢掉最后不足一分钟的使用量。
+     * 统计属于辅助能力：即使 flush 临时失败，也不能反过来阻塞核心的流量重置操作。
      */
     public void captureUser(Long userId) {
         if (userId == null) {
             return;
         }
-        User user = userService.getById(userId);
-        if (user == null) {
-            return;
+        try {
+            User user = userService.getById(userId);
+            if (user == null) {
+                return;
+            }
+            sampleUser(user);
+        } catch (Exception e) {
+            log.warn("用户 {} 手动重置前流量采样失败，将继续执行重置: {}", userId, e.getMessage());
         }
-        sampleUser(user);
     }
 
     /** 每小时清理一次历史，保留 31 天。 */
