@@ -33,6 +33,12 @@ export const checkNodeStatus = (nodeId?: number) => {
   const params = nodeId ? { nodeId } : {};
   return Network.post("/node/check-status", params);
 };
+export const checkNodeQuality = (data: {
+  nodeId: number;
+  target?: string;
+  port?: number;
+  count?: number;
+}) => Network.post("/node/quality", data);
 
 // 隧道CRUD操作 - 全部使用POST请求
 export const createTunnel = (data: any) => Network.post("/tunnel/create", data);
