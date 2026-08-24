@@ -63,6 +63,17 @@ export default function H5Layout({
       adminOnly: true
     },
     {
+      path: '/network',
+      label: '编排',
+      icon: (
+        <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M5 3a2 2 0 100 4 2 2 0 000-4zM15 3a2 2 0 100 4 2 2 0 000-4zM10 13a2 2 0 100 4 2 2 0 000-4z" />
+          <path fillRule="evenodd" d="M6.78 6.625a1 1 0 011.345-.405L10 7.233l1.875-1.013a1 1 0 11.95 1.76L11 8.966V13a1 1 0 11-2 0V8.966L7.185 7.98a1 1 0 01-.405-1.355z" clipRule="evenodd" />
+        </svg>
+      ),
+      adminOnly: true
+    },
+    {
       path: '/profile',
       label: '我的',
       icon: (

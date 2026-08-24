@@ -74,6 +74,7 @@ export const deleteSpeedLimit = (id: number) => Network.post("/speed-limit/delet
 
 // 协议入站(合体面板:协议搭建 + 限速)
 export const createInbound = (data: any) => Network.post("/inbound/create", data);
+export const updateInbound = (data: any) => Network.post("/inbound/update", data);
 export const oneClickInbound = (nodeId: number, sni?: string) => Network.post("/inbound/one-click", { nodeId, sni });
 export const getInboundList = () => Network.post("/inbound/list");
 export const deleteInbound = (id: number) => Network.post("/inbound/delete", { id });

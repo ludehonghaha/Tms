@@ -35,6 +35,13 @@ public class InboundController extends BaseController {
         return inboundService.createInbound(dto);
     }
 
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/update")
+    public R update(@Validated @RequestBody InboundDto dto) {
+        return inboundService.updateInbound(dto);
+    }
+
     /** 一键添加:在指定节点上把所有支持的协议一键全建出来(像 s-ui 的一键添加) */
     @LogAnnotation
     @RequireRole

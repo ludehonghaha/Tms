@@ -155,7 +155,9 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
         // 打标:哪些是搭协议时自动建的隧道,好让前端默认收起来。
         // 命名由 InboundServiceImpl.ensurePortForwardTunnel 固定生成。
         tunnelList.forEach(t -> t.setProtocolManaged(
-                t.getName() != null && t.getName().startsWith("inbound-tunnel-node")));
+                t.getName() != null && (
+                        t.getName().startsWith("inbound-tunnel-node")
+                                || t.getName().startsWith("nb-ssh-inbound-tunnel-node"))));
         return R.ok(tunnelList);
     }
 
