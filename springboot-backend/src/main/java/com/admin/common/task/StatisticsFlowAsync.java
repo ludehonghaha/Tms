@@ -50,18 +50,21 @@ public class StatisticsFlowAsync {
     StatisticsFlowService statisticsFlowService;
 
     /**
-     * 每分钟整分钟采样。系统的自动月度 reset 在 00:00:05 执行，因此 00:00:00
-     * 会先把 reset 前最后一分钟完整落桶，再执行清零。
+     * 每分钟整分钟采样。增量描述的是“刚刚结束的那一分钟”，因此定时采样用 now-1s
+     * 决定小时桶：15:00:00 的差额归到 14:00 桶，00:00:00 的差额归到昨天 23:00，
+     * 避免把每天最后一分钟误算到第二天。系统自动月度 reset 在 00:00:05 执行，
+     * 所以 00:00:00 仍会先把 reset 前的最后一分钟落桶。
      */
     @Scheduled(cron = "0 * * * * ?")
     public void statisticsFlow() {
         List<User> users = userService.list();
+        LocalDateTime bucketTime = LocalDateTime.now().minusSeconds(1);
         for (User user : users) {
             if (user == null || user.getId() == null) {
                 continue;
             }
             try {
-                sampleUser(user);
+                sampleUser(user, bucketTime);
             } catch (Exception e) {
                 // 单个用户采样失败不能影响其他用户，也不能拖垮调度线程。
                 log.warn("用户 {} 流量采样失败: {}", user.getId(), e.getMessage());
@@ -71,7 +74,7 @@ public class StatisticsFlowAsync {
 
     /**
      * 手动流量重置前调用：立即把这个用户从上次采样到现在的差额落桶。
-     * 这样管理员在任意秒点击 reset 都不会丢掉最后不足一分钟的使用量。
+     * 手动 capture 的流量归当前时段，不使用定时采样的 now-1s 边界规则。
      * 统计属于辅助能力：即使 flush 临时失败，也不能反过来阻塞核心的流量重置操作。
      */
     public void captureUser(Long userId) {
@@ -83,7 +86,7 @@ public class StatisticsFlowAsync {
             if (user == null) {
                 return;
             }
-            sampleUser(user);
+            sampleUser(user, LocalDateTime.now());
         } catch (Exception e) {
             log.warn("用户 {} 手动重置前流量采样失败，将继续执行重置: {}", userId, e.getMessage());
         }
@@ -99,7 +102,7 @@ public class StatisticsFlowAsync {
         );
     }
 
-    private void sampleUser(User user) {
+    private void sampleUser(User user, LocalDateTime bucketTime) {
         final Long userId = user.getId();
         synchronized (USER_LOCKS.computeIfAbsent(userId, ignored -> new Object())) {
             long currentTotal = safe(user.getInFlow()) + safe(user.getOutFlow());
@@ -114,7 +117,7 @@ public class StatisticsFlowAsync {
                 increment = currentTotal;
             }
 
-            upsertCurrentHour(userId, increment, currentTotal);
+            upsertHour(userId, increment, currentTotal, bucketTime);
             lastObservedTotals.put(userId, currentTotal);
         }
     }
@@ -133,8 +136,8 @@ public class StatisticsFlowAsync {
         return last.getTotalFlow();
     }
 
-    private void upsertCurrentHour(Long userId, long increment, long currentTotal) {
-        LocalDateTime hour = LocalDateTime.now().withMinute(0).withSecond(0).withNano(0);
+    private void upsertHour(Long userId, long increment, long currentTotal, LocalDateTime bucketTime) {
+        LocalDateTime hour = bucketTime.withMinute(0).withSecond(0).withNano(0);
         long hourStart = hour.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
         long hourEnd = hourStart + 60L * 60 * 1000;
 
