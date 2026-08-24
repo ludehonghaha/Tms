@@ -352,10 +352,12 @@ jobs:
           gh release upload "${VERSION}" ./install.sh --clobber
           gh release upload "${VERSION}" ./panel_install.sh --clobber
           
+          # 上传 Docker Compose 配置文件（覆盖）
           echo "📤 更新 Docker Compose 配置文件..."
           gh release upload "${VERSION}" ./docker-compose-v4.yml --clobber
           gh release upload "${VERSION}" ./docker-compose-v6.yml --clobber
           
+          # 上传数据库初始化文件（覆盖）
           echo "📤 更新数据库初始化文件..."
           gh release upload "${VERSION}" ./gost.sql --clobber
           
