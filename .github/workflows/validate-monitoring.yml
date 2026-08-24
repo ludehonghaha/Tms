@@ -1,6 +1,9 @@
 name: Validate monitoring feature
 
 on:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - feature/monitoring-runtime-completion
