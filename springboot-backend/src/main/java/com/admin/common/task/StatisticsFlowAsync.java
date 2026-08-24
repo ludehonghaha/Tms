@@ -26,8 +26,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * 现在改为每分钟采样，但仍然只维护「每用户每小时一行」：
  * - 正常增长：把与上次累计值的差额累加到当前小时；
  * - 发生重置：检测到累计值变小后，从 0 重新计，避免出现负流量；
- * - 重启恢复：优先用最近一条记录的 total_flow 作为基线，不会因为面板重启把
- *   当前累计值整段重复记入；
+ * - 重启恢复：优先用最近一条记录的 total_flow 作为基线；
  * - 保留 31 天，足够展示最近 24 小时、每天以及本月趋势。
  */
 @Slf4j
@@ -38,12 +37,10 @@ public class StatisticsFlowAsync {
     private static final long RETENTION_MS = 31L * 24 * 60 * 60 * 1000;
     private static final DateTimeFormatter HOUR_FORMAT = DateTimeFormatter.ofPattern("HH:00");
 
-    /** 同一用户的采样串行，避免定时任务偶发重叠造成重复累计。 */
+    /** 同一用户的采样串行，避免调度与手动 reset 前 flush 同时执行而重复累计。 */
     private static final ConcurrentHashMap<Long, Object> USER_LOCKS = new ConcurrentHashMap<>();
 
-    /**
-     * 进程内最近一次看到的累计流量。第一次采样会从数据库最近记录恢复基线。
-     */
+    /** 进程内最近一次看到的累计流量。第一次采样会从数据库最近记录恢复基线。 */
     private final ConcurrentHashMap<Long, Long> lastObservedTotals = new ConcurrentHashMap<>();
 
     @Resource
@@ -52,8 +49,11 @@ public class StatisticsFlowAsync {
     @Resource
     StatisticsFlowService statisticsFlowService;
 
-    /** 每分钟第 5 秒采样，避开大量整点任务。 */
-    @Scheduled(cron = "5 * * * * ?")
+    /**
+     * 每分钟整分钟采样。系统的自动月度 reset 在 00:00:05 执行，因此 00:00:00
+     * 会先把 reset 前最后一分钟完整落桶，再执行清零。
+     */
+    @Scheduled(cron = "0 * * * * ?")
     public void statisticsFlow() {
         List<User> users = userService.list();
         for (User user : users) {
@@ -67,6 +67,21 @@ public class StatisticsFlowAsync {
                 log.warn("用户 {} 流量采样失败: {}", user.getId(), e.getMessage());
             }
         }
+    }
+
+    /**
+     * 手动流量重置前调用：立即把这个用户从上次采样到现在的差额落桶。
+     * 这样管理员在任意秒点击 reset 都不会丢掉最后不足一分钟的使用量。
+     */
+    public void captureUser(Long userId) {
+        if (userId == null) {
+            return;
+        }
+        User user = userService.getById(userId);
+        if (user == null) {
+            return;
+        }
+        sampleUser(user);
     }
 
     /** 每小时清理一次历史，保留 31 天。 */
@@ -133,7 +148,6 @@ public class StatisticsFlowAsync {
             bucket.setFlow(Math.max(0L, increment));
             bucket.setTotalFlow(currentTotal);
             bucket.setTime(hour.format(HOUR_FORMAT));
-            // 固定到整点，前端和后续日/月聚合都可以直接使用。
             bucket.setCreatedTime(hourStart);
             statisticsFlowService.save(bucket);
             return;
