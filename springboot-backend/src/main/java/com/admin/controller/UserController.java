@@ -80,9 +80,11 @@ public class UserController extends BaseController {
     @RequireRole
     @PostMapping("/reset")
     public R reset(@Validated @RequestBody ResetFlowDto resetFlowDto) {
-        // 手动 reset 可能发生在每分钟采样的任意两个时刻之间，先 flush 可避免
-        // 最后几十秒流量从日统计里消失。capture 失败不会修改用户流量。
-        statisticsFlowAsync.captureUser(resetFlowDto.getId().longValue());
+        // type=1 才是账号总流量清零；其它类型的 id 是 user_tunnel.id，不能当 userId。
+        // 账号 reset 可能发生在每分钟采样的任意两个时刻之间，先 flush 避免最后几十秒丢失。
+        if (resetFlowDto.getType() == 1) {
+            statisticsFlowAsync.captureUser(resetFlowDto.getId().longValue());
+        }
         return userService.reset(resetFlowDto);
     }
 
