@@ -5,9 +5,11 @@ import com.admin.common.aop.LogAnnotation;
 import com.admin.common.annotation.RequireRole;
 import com.admin.common.dto.*;
 import com.admin.common.lang.R;
+import com.admin.common.task.StatisticsFlowAsync;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
+import javax.annotation.Resource;
 import java.util.Map;
 
 /**
@@ -22,6 +24,9 @@ import java.util.Map;
 @CrossOrigin
 @RequestMapping("/api/v1/user")
 public class UserController extends BaseController {
+
+    @Resource
+    private StatisticsFlowAsync statisticsFlowAsync;
 
     @LogAnnotation
     @PostMapping("/login")
@@ -75,6 +80,9 @@ public class UserController extends BaseController {
     @RequireRole
     @PostMapping("/reset")
     public R reset(@Validated @RequestBody ResetFlowDto resetFlowDto) {
+        // 手动 reset 可能发生在每分钟采样的任意两个时刻之间，先 flush 可避免
+        // 最后几十秒流量从日统计里消失。capture 失败不会修改用户流量。
+        statisticsFlowAsync.captureUser(resetFlowDto.getId().longValue());
         return userService.reset(resetFlowDto);
     }
 
