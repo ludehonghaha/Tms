@@ -109,17 +109,19 @@ func main() {
 	// 加载配置文件
 	config, err := LoadConfig("config.json")
 	if err != nil {
-		fmt.Println("❌ 配置加载失败: %v\n", err)
+		fmt.Printf("❌ 配置加载失败: %v\n", err)
 		fmt.Println("请确保当前目录存在 config.json 文件")
 		os.Exit(1)
 	}
 
-	fmt.Println("✅ 配置加载成功 - addr: %s", config.Addr)
+	fmt.Printf("✅ 配置加载成功 - addr: %s\n", config.Addr)
 
 	log := xlogger.NewLogger()
 	logger.SetDefault(log)
 
-	wsReporter := socket.StartWebSocketReporterWithConfig(config.Addr, config.Secret, config.Http, config.Tls, config.Socks, "1.2.4")
+	// WebSocket 握手里上报的版本必须与 -V / version.go 使用同一来源。
+	// 旧代码硬编码 1.2.4，导致面板即使安装了新 Runtime 仍长期显示旧版本。
+	wsReporter := socket.StartWebSocketReporterWithConfig(config.Addr, config.Secret, config.Http, config.Tls, config.Socks, version)
 	defer wsReporter.Stop()
 	service.SetHTTPReportURL(config.Addr, config.Secret)
 
