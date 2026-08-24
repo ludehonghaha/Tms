@@ -8,6 +8,7 @@ import ForwardPage from "@/pages/forward";
 import TunnelPage from "@/pages/tunnel";
 import NodeOverviewPage from "@/pages/node-overview";
 import NetworkQualityPage from "@/pages/network-quality";
+import TrafficStatisticsPage from "@/pages/traffic-statistics";
 import UserPage from "@/pages/user";
 import ProfilePage from "@/pages/profile";
 import LimitPage from "@/pages/limit";
@@ -233,6 +234,14 @@ function App() {
         element={
           <ProtectedRoute>
             {isAdmin() ? <NetworkQualityPage /> : <Navigate to="/my-sub" replace />}
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/traffic-statistics"
+        element={
+          <ProtectedRoute>
+            {isAdmin() ? <TrafficStatisticsPage /> : <Navigate to="/my-sub" replace />}
           </ProtectedRoute>
         }
       />
