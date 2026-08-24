@@ -14,7 +14,8 @@ import (
 // 中途退出/磁盘写满，下一次启动拿到的就是半截 JSON。动态下发越频繁，这个窗口越明显。
 //
 // 现在先完整写入同目录临时文件，fsync 成功后再 rename 覆盖。Linux/Unix 同文件系统
-// rename 是原子的，因此任何时刻磁盘上至少保留一份完整配置。
+// rename 是原子的，因此任何时刻磁盘上至少保留一份完整配置；覆盖前再保留一份
+// gost.json.bak，便于异常下发时快速回滚到上一版。
 func saveConfig() error {
 	file := "gost.json"
 	dir := filepath.Dir(file)
@@ -50,6 +51,14 @@ func saveConfig() error {
 		return fmt.Errorf("关闭 Runtime 临时配置失败: %w", err)
 	}
 
+	// 先保留上一版。备份失败不覆盖现有 gost.json，避免在没有回滚点时继续下发。
+	if old, err := os.ReadFile(file); err == nil && len(old) > 0 {
+		if err := writeAtomic(filepath.Join(dir, base+".bak"), old, 0600); err != nil {
+			_ = os.Remove(tmpName)
+			return fmt.Errorf("备份上一版 Runtime 配置失败: %w", err)
+		}
+	}
+
 	if err := os.Rename(tmpName, file); err != nil {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("原子替换 Runtime 配置失败: %w", err)
@@ -62,5 +71,39 @@ func saveConfig() error {
 		_ = d.Close()
 	}
 
+	return nil
+}
+
+func writeAtomic(path string, data []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	ok := false
+	defer func() {
+		_ = tmp.Close()
+		if !ok {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if err := tmp.Chmod(mode); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	ok = true
 	return nil
 }
