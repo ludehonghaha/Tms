@@ -577,42 +577,18 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 		response.Type = "UnknownCommandResponse"
 	}
 
-	// 处理器失败时只返回 NACK，绝不把可能处于半完成状态的内存配置写进 gost.json。
-	// 后端拿到失败 ACK 后可重试/重做一致性校验；磁盘继续保留上一份已确认配置。
+	// 发送响应
 	if err != nil {
+		saveConfig()
 		response.Success = false
 		response.Message = err.Error()
-		w.sendResponse(response)
-		return
+	} else {
+		saveConfig()
+		response.Success = true
+		response.Message = "OK"
 	}
 
-	// 只有会改变 GOST Runtime registry 的命令才需要落 gost.json。
-	// TcpPing / TestOutbound / RealityKeypair 等只读命令不应产生无意义的配置写盘。
-	if shouldPersistRuntimeConfig(cmd.Type) {
-		if persistErr := saveConfig(); persistErr != nil {
-			response.Success = false
-			response.Message = "命令已执行，但 Runtime 配置持久化失败: " + persistErr.Error()
-			w.sendResponse(response)
-			return
-		}
-	}
-
-	response.Success = true
-	response.Message = "OK"
 	w.sendResponse(response)
-}
-
-// shouldPersistRuntimeConfig 只列出真正修改 GOST Runtime registry 的命令。
-// SetProtocol 自己原子写 config.json；sing-box 命令由对应 handler 管自己的配置文件。
-func shouldPersistRuntimeConfig(commandType string) bool {
-	switch commandType {
-	case "AddService", "UpdateService", "DeleteService", "PauseService", "ResumeService",
-		"AddChains", "UpdateChains", "DeleteChains",
-		"AddLimiters", "UpdateLimiters", "DeleteLimiters":
-		return true
-	default:
-		return false
-	}
 }
 
 // Service 命令处理函数
@@ -886,11 +862,11 @@ func (w *WebSocketReporter) handleSetProtocol(data interface{}) error {
 	return nil
 }
 
-// updateLocalConfigJSON 将 http/tls/socks 写入工作目录下的 config.json。
-// 这里也必须原子写；否则协议开关下发时进程异常可能把 addr/secret 一起写坏。
+// updateLocalConfigJSON 将 http/tls/socks 写入工作目录下的 config.json
 func updateLocalConfigJSON(httpVal int, tlsVal int, socksVal int) error {
 	path := "config.json"
 
+	// 读取现有配置
 	type LocalConfig struct {
 		Addr   string `json:"addr"`
 		Secret string `json:"secret"`
@@ -899,25 +875,21 @@ func updateLocalConfigJSON(httpVal int, tlsVal int, socksVal int) error {
 		Socks  int    `json:"socks"`
 	}
 
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("读取现有 config.json 失败: %w", err)
-	}
-
 	var cfg LocalConfig
-	if err := json.Unmarshal(b, &cfg); err != nil {
-		return fmt.Errorf("现有 config.json 无法解析，拒绝覆盖: %w", err)
+	if b, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(b, &cfg)
 	}
 
 	cfg.Http = httpVal
 	cfg.Tls = tlsVal
 	cfg.Socks = socksVal
 
+	// 写回
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
-	return writeAtomic(path, data, 0600)
+	return os.WriteFile(path, data, 0644)
 }
 
 // handleCall 处理服务端的call回调消息

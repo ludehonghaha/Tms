@@ -1,5 +1,6 @@
 package com.admin.common.task;
 
+
 import com.admin.entity.StatisticsFlow;
 import com.admin.entity.User;
 import com.admin.service.StatisticsFlowService;
@@ -10,38 +11,18 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 
+import javax.annotation.PostConstruct;
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
-import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * 单用户流量历史采样。
- *
- * 旧实现每小时只采一次用户累计流量：如果管理员在两次采样之间重置流量，
- * 重置前那一段用量会直接丢失；同时只保留 48 小时，无法做日/月级回看。
- *
- * 现在改为每分钟采样，但仍然只维护「每用户每小时一行」：
- * - 正常增长：把与上次累计值的差额累加到当前小时；
- * - 发生重置：检测到累计值变小后，从 0 重新计，避免出现负流量；
- * - 重启恢复：优先用最近一条记录的 total_flow 作为基线；
- * - 保留 31 天，足够展示最近 24 小时、每天以及本月趋势。
- */
 @Slf4j
 @Configuration
 @EnableScheduling
 public class StatisticsFlowAsync {
-
-    private static final long RETENTION_MS = 31L * 24 * 60 * 60 * 1000;
-    private static final DateTimeFormatter HOUR_FORMAT = DateTimeFormatter.ofPattern("HH:00");
-
-    /** 同一用户的采样串行，避免调度与手动 reset 前 flush 同时执行而重复累计。 */
-    private static final ConcurrentHashMap<Long, Object> USER_LOCKS = new ConcurrentHashMap<>();
-
-    /** 进程内最近一次看到的累计流量。第一次采样会从数据库最近记录恢复基线。 */
-    private final ConcurrentHashMap<Long, Long> lastObservedTotals = new ConcurrentHashMap<>();
 
     @Resource
     UserService userService;
@@ -49,127 +30,61 @@ public class StatisticsFlowAsync {
     @Resource
     StatisticsFlowService statisticsFlowService;
 
-    /**
-     * 每分钟整分钟采样。增量描述的是“刚刚结束的那一分钟”，因此定时采样用 now-1s
-     * 决定小时桶：15:00:00 的差额归到 14:00 桶，00:00:00 的差额归到昨天 23:00，
-     * 避免把每天最后一分钟误算到第二天。系统自动月度 reset 在 00:00:05 执行，
-     * 所以 00:00:00 仍会先把 reset 前的最后一分钟落桶。
-     */
-    @Scheduled(cron = "0 * * * * ?")
-    public void statisticsFlow() {
-        List<User> users = userService.list();
-        LocalDateTime bucketTime = LocalDateTime.now().minusSeconds(1);
-        for (User user : users) {
-            if (user == null || user.getId() == null) {
-                continue;
-            }
-            try {
-                sampleUser(user, bucketTime);
-            } catch (Exception e) {
-                // 单个用户采样失败不能影响其他用户，也不能拖垮调度线程。
-                log.warn("用户 {} 流量采样失败: {}", user.getId(), e.getMessage());
-            }
-        }
-    }
+    @Scheduled(cron = "0 0 * * * ?")
+    public void statistics_flow() {
+        LocalDateTime currentHour = LocalDateTime.now().withMinute(0).withSecond(0).withNano(0);
+        String hourString = currentHour.format(DateTimeFormatter.ofPattern("HH:mm"));
+        long time = new Date().getTime();
 
-    /**
-     * 手动流量重置前调用：立即把这个用户从上次采样到现在的差额落桶。
-     * 手动 capture 的流量归当前时段，不使用定时采样的 now-1s 边界规则。
-     * 统计属于辅助能力：即使 flush 临时失败，也不能反过来阻塞核心的流量重置操作。
-     */
-    public void captureUser(Long userId) {
-        if (userId == null) {
-            return;
-        }
-        try {
-            User user = userService.getById(userId);
-            if (user == null) {
-                return;
-            }
-            sampleUser(user, LocalDateTime.now());
-        } catch (Exception e) {
-            log.warn("用户 {} 手动重置前流量采样失败，将继续执行重置: {}", userId, e.getMessage());
-        }
-    }
-
-    /** 每小时清理一次历史，保留 31 天。 */
-    @Scheduled(cron = "20 7 * * * ?")
-    public void cleanupHistory() {
-        long cutoffMs = System.currentTimeMillis() - RETENTION_MS;
+        // 删除48小时前的数据
+        long nowMs = new Date().getTime();
+        long cutoffMs = nowMs - 48L * 60 * 60 * 1000;
         statisticsFlowService.remove(
                 new LambdaQueryWrapper<StatisticsFlow>()
                         .lt(StatisticsFlow::getCreatedTime, cutoffMs)
         );
-    }
 
-    private void sampleUser(User user, LocalDateTime bucketTime) {
-        final Long userId = user.getId();
-        synchronized (USER_LOCKS.computeIfAbsent(userId, ignored -> new Object())) {
-            long currentTotal = safe(user.getInFlow()) + safe(user.getOutFlow());
-            long previousTotal = lastObservedTotals.computeIfAbsent(userId,
-                    ignored -> loadPreviousTotal(userId, currentTotal));
 
-            long increment;
-            if (currentTotal >= previousTotal) {
-                increment = currentTotal - previousTotal;
-            } else {
-                // 流量被重置。重置后的当前值属于新周期，不能用负差额抵消历史。
-                increment = currentTotal;
+
+
+
+        List<User> list = userService.list();
+        List<StatisticsFlow> statisticsFlowList = new ArrayList<>();
+
+        for (User user : list) {
+            long currentFlow = user.getInFlow() + user.getOutFlow();
+
+            // 从数据库获取上一次记录
+            StatisticsFlow lastFlowRecord = statisticsFlowService.getOne(
+                    new LambdaQueryWrapper<StatisticsFlow>()
+                            .eq(StatisticsFlow::getUserId, user.getId()) 
+                            .orderByDesc(StatisticsFlow::getId)         
+                            .last("LIMIT 1")                     
+            );
+
+            long currentTotalFlow = currentFlow;
+            long incrementFlow = currentTotalFlow;
+            
+            if (lastFlowRecord != null) {
+                long lastTotalFlow = lastFlowRecord.getTotalFlow();
+                incrementFlow = currentTotalFlow - lastTotalFlow;
+                
+                if (incrementFlow < 0) {
+                    incrementFlow = currentTotalFlow; 
+                }
             }
 
-            upsertHour(userId, increment, currentTotal, bucketTime);
-            lastObservedTotals.put(userId, currentTotal);
-        }
-    }
+            StatisticsFlow statisticsFlow = new StatisticsFlow();
+            statisticsFlow.setUserId(user.getId());
+            statisticsFlow.setFlow(incrementFlow);        
+            statisticsFlow.setTotalFlow(currentTotalFlow); 
+            statisticsFlow.setTime(hourString);
+            statisticsFlow.setCreatedTime(time);
 
-    private long loadPreviousTotal(Long userId, long currentTotal) {
-        StatisticsFlow last = statisticsFlowService.getOne(
-                new LambdaQueryWrapper<StatisticsFlow>()
-                        .eq(StatisticsFlow::getUserId, userId)
-                        .orderByDesc(StatisticsFlow::getCreatedTime)
-                        .last("LIMIT 1")
-        );
-        if (last == null || last.getTotalFlow() == null) {
-            // 新装/首次启用统计时把当前累计值作为基线，避免把历史总量一次性灌进当前小时。
-            return currentTotal;
-        }
-        return last.getTotalFlow();
-    }
-
-    private void upsertHour(Long userId, long increment, long currentTotal, LocalDateTime bucketTime) {
-        LocalDateTime hour = bucketTime.withMinute(0).withSecond(0).withNano(0);
-        long hourStart = hour.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
-        long hourEnd = hourStart + 60L * 60 * 1000;
-
-        StatisticsFlow bucket = statisticsFlowService.getOne(
-                new LambdaQueryWrapper<StatisticsFlow>()
-                        .eq(StatisticsFlow::getUserId, userId)
-                        .ge(StatisticsFlow::getCreatedTime, hourStart)
-                        .lt(StatisticsFlow::getCreatedTime, hourEnd)
-                        .orderByAsc(StatisticsFlow::getId)
-                        .last("LIMIT 1")
-        );
-
-        if (bucket == null) {
-            bucket = new StatisticsFlow();
-            bucket.setUserId(userId);
-            bucket.setFlow(Math.max(0L, increment));
-            bucket.setTotalFlow(currentTotal);
-            bucket.setTime(hour.format(HOUR_FORMAT));
-            bucket.setCreatedTime(hourStart);
-            statisticsFlowService.save(bucket);
-            return;
+            statisticsFlowList.add(statisticsFlow);
         }
 
-        if (increment > 0) {
-            bucket.setFlow(safe(bucket.getFlow()) + increment);
-        }
-        bucket.setTotalFlow(currentTotal);
-        bucket.setTime(hour.format(HOUR_FORMAT));
-        statisticsFlowService.updateById(bucket);
+        statisticsFlowService.saveBatch(statisticsFlowList);
     }
 
-    private long safe(Long value) {
-        return value == null ? 0L : value;
-    }
 }
