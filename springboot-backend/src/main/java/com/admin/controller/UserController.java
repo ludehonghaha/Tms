@@ -5,9 +5,11 @@ import com.admin.common.aop.LogAnnotation;
 import com.admin.common.annotation.RequireRole;
 import com.admin.common.dto.*;
 import com.admin.common.lang.R;
+import com.admin.common.task.StatisticsFlowAsync;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
+import javax.annotation.Resource;
 import java.util.Map;
 
 /**
@@ -22,6 +24,9 @@ import java.util.Map;
 @CrossOrigin
 @RequestMapping("/api/v1/user")
 public class UserController extends BaseController {
+
+    @Resource
+    private StatisticsFlowAsync statisticsFlowAsync;
 
     @LogAnnotation
     @PostMapping("/login")
@@ -75,6 +80,11 @@ public class UserController extends BaseController {
     @RequireRole
     @PostMapping("/reset")
     public R reset(@Validated @RequestBody ResetFlowDto resetFlowDto) {
+        // type=1 才是账号总流量清零；其它类型的 id 是 user_tunnel.id，不能当 userId。
+        // 账号 reset 可能发生在每分钟采样的任意两个时刻之间，先 flush 避免最后几十秒丢失。
+        if (resetFlowDto.getType() == 1) {
+            statisticsFlowAsync.captureUser(resetFlowDto.getId().longValue());
+        }
         return userService.reset(resetFlowDto);
     }
 

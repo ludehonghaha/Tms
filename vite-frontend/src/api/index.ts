@@ -22,6 +22,7 @@ export const getAllUsers = (pageData: any = {}) => Network.post("/user/list", pa
 export const updateUser = (data: any) => Network.post("/user/update", data);
 export const deleteUser = (id: number) => Network.post("/user/delete", { id });
 export const getUserPackageInfo = () => Network.post("/user/package");
+export const getTrafficStatistics = (days: number = 7) => Network.post("/traffic/users", { days });
 
 // 转发机CRUD操作 - 全部使用POST请求
 export const createNode = (data: any) => Network.post("/node/create", data);
@@ -33,6 +34,12 @@ export const checkNodeStatus = (nodeId?: number) => {
   const params = nodeId ? { nodeId } : {};
   return Network.post("/node/check-status", params);
 };
+export const checkNodeQuality = (data: {
+  nodeId: number;
+  target?: string;
+  port?: number;
+  count?: number;
+}) => Network.post("/node/quality", data);
 
 // 隧道CRUD操作 - 全部使用POST请求
 export const createTunnel = (data: any) => Network.post("/tunnel/create", data);
